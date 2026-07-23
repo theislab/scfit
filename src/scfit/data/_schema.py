@@ -119,6 +119,7 @@ class Node:
     cols: tuple[str, ...]
     keys: RepKey | Sequence[RepKey] = "X"  # one rep (loc str / accessor), or several aligned reps
     weights: Weights = field(default_factory=dict)
+    # TODO: maybe this shouldn't be here
     in_memory: bool = False  # materialize this node's selected cells into RAM (see binded._io)
 
     def __post_init__(self) -> None:  # structural checks (data-free)
