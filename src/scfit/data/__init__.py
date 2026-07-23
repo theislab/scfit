@@ -13,6 +13,7 @@ cellflow and sc-flow-tools use-cases.
 """
 
 from scfit.data._condition import ConditionLookup
+from scfit.data._io import leaf_codes
 from scfit.data._loader import Loader
 from scfit.data._schema import (
     Bind,
@@ -38,6 +39,7 @@ __all__ = [
     "Weights",
     "frequency",
     "inverse_frequency",
+    "leaf_codes",
     "resolve_split_configs",
     "split_assignment",
     "split_scheme",

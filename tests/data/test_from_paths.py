@@ -166,12 +166,12 @@ def test_node_keys_accept_anndata_accessors():
 
     from scfit.data import Node
 
-    # single accessor and a tuple of accessors both normalize to the loc-string form
+    # accessors pass through; legacy loc strings normalize to the equivalent accessor
     assert Node("s", COLS, A.X).keys == ("X",)
     assert Node("s", COLS, A.obsm["emb"]).keys == ("obsm/emb",)
     assert Node("s", COLS, A.layers["log1p"]).keys == ("layers/log1p",)
     assert Node("s", COLS, (A.X, A.obsm["emb"])).keys == ("X", "obsm/emb")
-    # mixed accessor + legacy string is fine
+    # mixed accessor + legacy string both land on accessors
     assert Node("s", COLS, (A.X, "layers/log1p")).keys == ("X", "layers/log1p")
 
 
