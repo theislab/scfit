@@ -13,7 +13,7 @@ the exact same stream. See ``README.md``.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
@@ -32,11 +32,14 @@ from scfit.data._io import (
 )
 from scfit.data._schema import Container, Node, SamplerConfig, Scheme, _resolve_config_map, _weight_vector
 
-__all__ = ["Annotate", "Loader"]
+__all__ = ["Annotations", "Loader"]
 
-# A per-batch annotation callback: the root's drawn leaf (its ``cols`` tuple) → named arrays for that
-# batch (e.g. the perturbation encoding). Whatever it returns is placed verbatim under ``"annotations"``.
-type Annotate = Callable[[tuple], Mapping[str, np.ndarray]]
+# Per-node annotations: ``{node name: {leaf: {realm: array}}}`` — for a node, a lookup from that node's
+# leaf (its ``cols`` combination) to the named arrays for a batch drawn from that leaf (e.g. the
+# perturbation encoding). Keyed by the SAME leaf tuples as the node's ``weights``. Each batch surfaces
+# ``{node name: the current leaf's arrays}`` under ``"annotations"`` for every node given here — the node's
+# per-batch leaf is read from annbatch's ``comb`` (for a bound child, the child leaf is ``comb``'s tail).
+type Annotations = Mapping[str, Mapping[tuple, Mapping[str, np.ndarray]]]
 
 if TYPE_CHECKING:
     from scfit.data._schema import Bind, Container, SamplerConfig, Scheme
@@ -47,7 +50,7 @@ class Loader:
         self,
         scheme: Scheme,
         sampler_config: SamplerConfig | Mapping[str, SamplerConfig],
-        annotations: Annotate | None = None,
+        annotations: Annotations | None = None,
         *,
         preload_to_gpu: bool = False,
     ) -> None:
@@ -63,6 +66,8 @@ class Loader:
         ].batch_size  # root/target batch size — drives the pass length
 
         self._child_binds: list[Bind] = [b for b in scheme.binds if b.parent == self.scheme.root]
+        # a bound child's `comb` is the joint (common…, child leaf…); its own leaf is the tail past `common`.
+        self._child_common: dict[str, tuple[str, ...]] = {b.child: b.common for b in self._child_binds}
 
         # one independent sub-generator per node (spawned off a fresh local `default_rng(scheme.seed)`, so
         # every loader from the same seed gets the same set), so nodes don't correlate. These stay pristine —
@@ -84,6 +89,7 @@ class Loader:
             src, cats, w, leaves = self._prepare(scheme, node)
             self._nodes[name] = src
             self._st[name] = {"node": node, "leaves": leaves, "w": w, "cats": cats}
+        self._validate_annotations()  # strict: every named node's positive-weight leaves must be covered
 
         # A natural epoch over the root (target) node: its cell count // the root's batch_size. The root
         # drives the zip, so every node draws the same number of batches; each node's num_samples ==
@@ -95,14 +101,13 @@ class Loader:
         # oracle is built once; the root loader's sampler and each bound child's inner are deepcopies of it,
         # so they start from identical state and their per-batch draws agree. All of a node's keys share the
         # node's rng, so the (identical) samplers select the same rows every batch — a node's reps are aligned.
-        self._oracle_sampler = self._new_class_sampler(self.scheme.root)  # per-batch condition schedule oracle
+        self._oracle_sampler = self._new_class_sampler(self.scheme.root)  # template: deepcopied for root + child inners
         self._loaders: dict[str, dict[str, AnnbatchLoader]] = {}
         self._add_node_loaders(self.scheme.root, deepcopy(self._oracle_sampler))
         for b in self._child_binds:
             self._add_node_loaders(b.child, self._new_bound_sampler(b))
 
         self._iters: dict[str, dict[str, Iterator[dict]]] | None = None
-        self._schedule: np.ndarray | None = None  # per-batch root leaf code for the current pass
         self._pos = 0
 
     def _resolve_configs(self, cfg: SamplerConfig | Mapping[str, SamplerConfig]) -> dict[str, SamplerConfig]:
@@ -124,6 +129,18 @@ class Loader:
                 f"node {name!r} sets in_memory=True but chunk_size={cfg.chunk_size}: an in-memory node is "
                 "read from RAM in one shot and must use chunk_size=1 (set it explicitly)."
             )
+
+    def _validate_annotations(self) -> None:
+        """Strict coverage: every named node's positive-weight leaf must have an annotation (no silent gaps)."""
+        if self._annotations is None:
+            return
+        for name, node_ann in self._annotations.items():
+            if name not in self._st:
+                raise ValueError(f"annotations reference unknown node {name!r}; nodes are {sorted(self._st)}.")
+            leaves, weights = self._st[name]["leaves"], self._st[name]["w"]
+            missing = [lf for lf, w in zip(leaves, weights, strict=True) if w > 0 and lf not in node_ann]
+            if missing:
+                raise ValueError(f"annotations for node {name!r} miss positive-weight leaves {missing}.")
 
     # ── build ────────────────────────────────────────────────────────────
     def _new_class_sampler(self, name: str) -> ClassSampler:
@@ -203,31 +220,45 @@ class Loader:
     def __iter__(self) -> Loader:
         return self
 
-    def _nodes_next(self, name: str) -> dict:
-        """One batch per rep of a node, keyed by accessor — identical samplers pick the same aligned rows."""
+    def _nodes_next(self, name: str) -> tuple[dict, object]:
+        """A node's aligned reps ``{rep loc: rows}`` plus its per-batch ``comb`` (category label).
+
+        Identical samplers pick the same aligned rows for every rep, and share one ``comb`` per batch.
+        """
         node = self._st[name]["node"]
-        return {key: next(self._iters[name][key])["X"] for key in node.keys}
+        reps, comb = {}, None
+        for key in node.keys:
+            batch = next(self._iters[name][key])
+            reps[key], comb = batch["X"], batch["comb"]
+        return reps, comb
+
+    def _node_leaf(self, name: str, comb: object) -> tuple:
+        """The node's own leaf for this batch: the root's ``comb`` as-is; a child's is ``comb`` past ``common``."""
+        leaf = tuple(comb)
+        return leaf if name == self.scheme.root else leaf[len(self._child_common[name]) :]
 
     def __next__(self) -> dict[str, dict]:
         if self._iters is None or self._pos >= self._n_batches:
-            # Start a fresh pass (first pass, next epoch, or resume after unpickling): draw the schedule and
-            # (re)build one iterator per node/key. The oracle's `batch_codes()` and each `iter()` each consume
-            self._schedule = self._oracle_sampler.batch_codes()
+            # Start a fresh pass (first pass, next epoch, or resume after unpickling): (re)build one iterator
+            # per node/key from the (advancing) sampler RNG, so each pass is a fresh reproducible epoch.
             self._iters = {
                 name: {key: iter(ld) for key, ld in loaders.items()} for name, loaders in self._loaders.items()
             }
             self._pos = 0
-        j = self._pos
         self._pos += 1
 
         # One entry per streamed node, keyed by node name: the root (``scheme.root``) is the target, each
         # bound child is a source. Each value is that node's aligned reps ``{rep loc: rows}`` (same cells).
-        out: dict = {self.scheme.root: self._nodes_next(self.scheme.root)}
-        for b in self._child_binds:  # bound child sources, replayed via their BoundClassSamplers
-            out[b.child] = self._nodes_next(b.child)
+        out: dict = {}
+        combs: dict = {}
+        for name in (self.scheme.root, *(b.child for b in self._child_binds)):
+            out[name], combs[name] = self._nodes_next(name)
         if self._annotations is not None:
-            leaf = self._st[self.scheme.root]["leaves"][int(self._schedule[j])]  # per-batch category (root leaf)
-            out["annotations"] = self._annotations(leaf)
+            # per named node, look up that node's current leaf (from its `comb`) — strict coverage was
+            # checked at construction, so every drawn leaf is present.
+            out["annotations"] = {
+                name: node_ann[self._node_leaf(name, combs[name])] for name, node_ann in self._annotations.items()
+            }
         return out
 
     def _factorize(self, src: Container, source: str, cols: tuple[str, ...]) -> tuple[np.ndarray, list[tuple]]:

@@ -14,7 +14,7 @@ cellflow and sc-flow-tools use-cases.
 """
 
 from scfit.data._io import leaf_codes
-from scfit.data._loader import Annotate, Loader
+from scfit.data._loader import Annotations, Loader
 from scfit.data._schema import (
     Bind,
     Container,
@@ -25,7 +25,7 @@ from scfit.data._schema import (
 from scfit.data._split import resolve_split_configs, split_assignment, split_scheme
 
 __all__ = [
-    "Annotate",
+    "Annotations",
     "Bind",
     "Container",
     "Loader",
