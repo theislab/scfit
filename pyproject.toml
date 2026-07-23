@@ -22,14 +22,38 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-  "anndata",
+  # scfit.data (the absorbed binded streaming layer) drives annbatch's ClassSampler / BoundClassSampler.
+  # Pinned to the fork by git URL (direct reference) until the bound-class sampler lands upstream — replace
+  # with `annbatch>=0.2.x` once it does. Immutable commit = the multi-dataset purity fix (scverse/annbatch#256).
+  # Requires allow-direct-references below.
+  "annbatch @ git+https://github.com/selmanozleyen/annbatch.git@98e543a8a75ef22d14bfcc8f5c9fa11f83db7c23",
+  # >=0.13 for the anndata.acc reference system (A.obsm[...] / adata[ref]) used by CouplingDataSchema.
+  "anndata>=0.13",
+  # the one Lightning training harness (scfit.training) imports lightning eagerly.
+  "lightning",
+  "numpy",
+  "pandas",
+  "safetensors",
+  "scikit-learn",
+  "scipy",
   # for debug logging (referenced from the issue template)
   "session-info2",
+  # torch is a base dep: nn / training / metrics use it, and annbatch yields 0-copy torch.Tensor batches.
+  # (Could become a `[torch]` extra later — the data layer itself is torch-free.)
+  "torch>=2",
+  # annbatch's high-performance zarr codec pipeline (zarrs-python) for local-filesystem out-of-core reads;
+  # strongly recommended. Installing the wheel here is equivalent to annbatch's `zarrs` extra.
+  "zarrs>=0.2.1",
+]
+# GPU-resident streaming: annbatch can keep its read window on-device via cupy (preload_to_gpu) so batches
+# arrive as GPU tensors with no per-step host->device copy. Linux/CUDA only; optional at runtime.
+optional-dependencies.cuda = [
+  "cupy-cuda12x; sys_platform=='linux'",
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://scfit.readthedocs.io/"
-urls.Homepage = "https://github.com/selmanozleyen/scfit"
-urls.Source = "https://github.com/selmanozleyen/scfit"
+urls.Homepage = "https://github.com/theislab/scfit"
+urls.Source = "https://github.com/theislab/scfit"
 
 [dependency-groups]
 dev = [
@@ -58,6 +82,8 @@ doc = [
 ]
 
 [tool.hatch]
+# Allow the immutable binded git dependency (PEP 508 direct reference).
+metadata.allow-direct-references = true
 envs.default.installer = "uv"
 envs.default.dependency-groups = [ "dev" ]
 envs.docs.scripts.build = "sphinx-build -M html docs docs/_build -W {args}"
@@ -116,11 +142,13 @@ lint.per-file-ignores."tests/*" = [ "D" ]
 lint.pydocstyle.convention = "numpy"
 
 [tool.pytest]
-addopts = [
+ini_options.testpaths = [ "tests" ]
+ini_options.pythonpath = [ "tests/data" ]  # scheme_helpers.py: shared test helper imported bare by test_split.py
+ini_options.addopts = [
   "--import-mode=importlib", # allow using test files with same name
+  "--strict-markers",
+  "--strict-config",
 ]
-strict = true
-testpaths = [ "tests" ]
 
 [tool.coverage]
 run.omit = [
