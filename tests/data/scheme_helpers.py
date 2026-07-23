@@ -26,7 +26,7 @@ import pandas as pd
 
 from scfit.data import Bind, Node, Scheme
 from scfit.data._io import obs_columns
-from scfit.data._schema import Container, uniform
+from scfit.data._schema import Container
 
 LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2", "d3")
@@ -34,6 +34,21 @@ CONTROL = "control"
 
 #: Column indices of the identity encoding produced by :func:`encoded_adata`.
 LINE, DRUG, IS_CONTROL, ROW_ID = 0, 1, 2, 3
+
+
+def uniform(combos: Sequence[tuple]) -> dict[tuple, float]:
+    """Every combination equally likely."""
+    return {tuple(c): 1.0 for c in combos}
+
+
+def frequency(counts: Mapping[tuple, int]) -> dict[tuple, float]:
+    """Sample each combination ∝ its cell count (favor abundant conditions)."""
+    return {tuple(k): float(c) for k, c in counts.items()}
+
+
+def inverse_frequency(counts: Mapping[tuple, int]) -> dict[tuple, float]:
+    """Sample each combination ∝ 1 / cell count (balance rare vs abundant conditions)."""
+    return {tuple(k): 1.0 / c for k, c in counts.items()}
 
 
 def codes(values: Sequence[str]) -> dict[str, int]:

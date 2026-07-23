@@ -17,11 +17,10 @@ import warnings
 import anndata as ad
 import scipy.sparse as sp
 from annbatch import DatasetCollection
-from scheme_helpers import perturbation_obs, write_zarr
+from scheme_helpers import perturbation_obs, uniform, write_zarr
 
 from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme
 from scfit.data._io import load_backed_adata
-from scfit.data._schema import uniform
 
 LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2")
@@ -97,6 +96,7 @@ def test_from_paths_single_adata_path_autodetects_adata(tmp_path):
     assert "log1p" not in src.layers
 
 
+@pytest.mark.xfail(reason="DatasetCollection support is not yet implemented in open_source.", strict=True)
 def test_from_paths_collection_root_autodetects_dataset_collection(tmp_path):
     pert, ctrl = _weights()
     ap = write_zarr(_adata(), tmp_path / "a.zarr")

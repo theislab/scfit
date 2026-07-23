@@ -17,10 +17,9 @@ import pytest
 
 pytest.importorskip("annbatch")
 
-from scheme_helpers import assert_shares, encoded_adata, leaf_shares, only_leaf, rep
+from scheme_helpers import assert_shares, encoded_adata, leaf_shares, only_leaf, rep, uniform
 
 from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme
-from scfit.data._schema import uniform
 
 COLS = ("cell_line", "drug")
 CFG = SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8)
