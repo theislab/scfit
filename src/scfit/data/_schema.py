@@ -237,7 +237,7 @@ def _resolve_config_map(
 
 @dataclass(frozen=True)
 class Scheme:
-    """The structural sampling spec: sources, a rooted tree of nodes, and the reproducibility cadence.
+    """The structural sampling spec: sources, a root node plus its direct children, and the reproducibility cadence.
 
     Read parameters (chunk / preload / batch sizes) are NOT here — they are a separate
     :class:`SamplerConfig` given to the loader.
@@ -255,7 +255,8 @@ class Scheme:
         Reproducibility seed. The loader builds a local ``np.random.default_rng(seed)`` and spawns one
         independent sub-stream per node, so nodes do not correlate and the whole stream is reproducible.
     binds
-        Parent→child links (see :class:`Bind`). Must form a rooted tree over ``nodes``.
+        Parent→child links (see :class:`Bind`). **Every bind's parent must be the root** — the topology
+        is a depth-1 star (root + direct children matched to it), not a deeper tree.
 
     Notes
     -----
@@ -317,8 +318,13 @@ class Scheme:
         for b in self.binds:
             if b.parent not in self.nodes or b.child not in self.nodes:
                 raise ValueError("bind references unknown node.")
+            if b.parent != self.root:
+                raise ValueError(
+                    f"bind parent must be the root {self.root!r}; got {b.parent!r}. Bind {b.child!r} directly "
+                    f"to the root — the topology is a depth-1 star (root + direct children), not a deeper tree."
+                )
             if b.child in parents:
-                raise ValueError(f"node {b.child!r} has multiple parents — must be a rooted tree.")
+                raise ValueError(f"node {b.child!r} is bound more than once.")
             parents[b.child] = b.parent
             shared = set(self.nodes[b.parent].cols) & set(self.nodes[b.child].cols)
             if not set(b.common) <= shared:
