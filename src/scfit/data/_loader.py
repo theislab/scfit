@@ -17,13 +17,21 @@ from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
+import anndata as ad
 import numpy as np
+import pandas as pd
 from annbatch import Loader as AnnbatchLoader  # annbatch's low-level per-rep loader (not binded's `Loader`)
 from annbatch.samplers import BoundClassSampler, ClassSampler
 
-from scfit.data._backend import _attach, _SchemeReader
 from scfit.data._condition import ConditionLookup, _condition_from_lookup
-from scfit.data._schema import _resolve_config_map
+from scfit.data._io import (
+    get_from_container,
+    is_backed_array,
+    leaf_codes,
+    materialize_node,
+    obs_columns,
+)
+from scfit.data._schema import Container, Node, SamplerConfig, Scheme, _resolve_config_map, _weight_vector
 
 __all__ = ["Loader"]
 
@@ -31,7 +39,7 @@ if TYPE_CHECKING:
     from scfit.data._schema import Bind, Container, SamplerConfig, Scheme
 
 
-class Loader(_SchemeReader):
+class Loader:
     def __init__(
         self,
         scheme: Scheme,
@@ -40,7 +48,9 @@ class Loader(_SchemeReader):
         *,
         preload_to_gpu: bool = False,
     ) -> None:
-        super().__init__()  # the shared per-(source, cols) obs-factorization cache (`_factorize`)
+        # (source name, cols) -> its full-obs (codes, leaves): construction-only scratch behind `_factorize`,
+        # emptied on pickle (each node's categorical already carries its own codes).
+        self._leaf_cache: dict[tuple[str, tuple[str, ...]], tuple[np.ndarray, list[tuple]]] = {}
         self.scheme = scheme
         self._condition_lookup = condition_lookup
         self._preload_to_gpu = preload_to_gpu
@@ -104,6 +114,15 @@ class Loader(_SchemeReader):
             self._check_in_memory_chunk(name, resolved[name], node)
         return resolved
 
+    @staticmethod
+    def _check_in_memory_chunk(name: str, cfg: SamplerConfig, node: Node) -> None:
+        """Reject a chunked config on an ``in_memory`` node."""
+        if node.in_memory and cfg.chunk_size != 1:
+            raise ValueError(
+                f"node {name!r} sets in_memory=True but chunk_size={cfg.chunk_size}: an in-memory node is "
+                "read from RAM in one shot and must use chunk_size=1 (set it explicitly)."
+            )
+
     # ── build ────────────────────────────────────────────────────────────
     def _new_class_sampler(self, name: str) -> ClassSampler:
         try:  # annbatch enforces its own run-length rule for chunk>1; forward with node context
@@ -145,14 +164,20 @@ class Loader(_SchemeReader):
             raise ValueError(f"node {b.child!r}: {e}") from e
 
     def _add_node_loaders(self, name: str, sampler: ClassSampler | BoundClassSampler) -> None:
-        # add the same loader to every key of the node;
+        # one annbatch Loader per rep of the node, keyed by the rep's anndata.acc accessor.
         src, node, to = self._nodes[name], self._st[name]["node"], self._cfg[name].to
-        loaders: dict[str, AnnbatchLoader] = {}
+        loaders: dict = {}
         for key in node.keys:
             base = AnnbatchLoader(
                 batch_sampler=deepcopy(sampler), return_index=False, to=to, preload_to_gpu=self._preload_to_gpu
             )
-            loaders[key] = _attach(base, src, key)
+            backings = get_from_container(src, key)
+            # in-memory adata → add_adatas (obs-free X wrapper); backed adata / list of backed → add_datasets
+            loaders[key] = (
+                base.add_adatas([ad.AnnData(X=b) for b in backings])
+                if isinstance(src, ad.AnnData) and not is_backed_array(backings[0])
+                else base.add_datasets(backings)
+            )
         self._loaders[name] = loaders
 
     # ── pickling ─────────────────────────────────────────────────────────────
@@ -176,8 +201,8 @@ class Loader(_SchemeReader):
     def __iter__(self) -> Loader:
         return self
 
-    def _nodes_next(self, name: str) -> dict[str, np.ndarray]:
-        """One batch per key of a node — identical samplers pick the same rows, so the reps are aligned."""
+    def _nodes_next(self, name: str) -> dict:
+        """One batch per rep of a node, keyed by accessor — identical samplers pick the same aligned rows."""
         node = self._st[name]["node"]
         return {key: next(self._iters[name][key])["X"] for key in node.keys}
 
@@ -185,9 +210,6 @@ class Loader(_SchemeReader):
         if self._iters is None or self._pos >= self._n_batches:
             # Start a fresh pass (first pass, next epoch, or resume after unpickling): draw the schedule and
             # (re)build one iterator per node/key. The oracle's `batch_codes()` and each `iter()` each consume
-            # one class draw, so — all samplers being deepcopies of the same oracle state — they stay in
-            # lockstep and draw the same per-batch class. RNG advances across passes, so an unpickled loader
-            # resumes the next pass rather than replaying.
             self._schedule = self._oracle_sampler.batch_codes()
             self._iters = {
                 name: {key: iter(ld) for key, ld in loaders.items()} for name, loaders in self._loaders.items()
@@ -205,3 +227,41 @@ class Loader(_SchemeReader):
             leaf = self._st[self.scheme.root]["leaves"][int(self._schedule[j])]  # per-batch category (root leaf)
             out["condition"] = _condition_from_lookup(self._condition_lookup, leaf)
         return out
+
+    def _factorize(self, src: Container, source: str, cols: tuple[str, ...]) -> tuple[np.ndarray, list[tuple]]:
+        """The source's ``(codes, leaves)`` over ``cols`` — read + factorized once, cached by ``(source, cols)``."""
+        ck = (source, cols)
+        if ck not in self._leaf_cache:
+            self._leaf_cache[ck] = leaf_codes(obs_columns(src, cols), cols)
+        return self._leaf_cache[ck]
+
+    def _node_stats(self, src: Container, node: Node) -> tuple[pd.Categorical, np.ndarray, list[tuple]]:
+        """Tuple-labelled categorical, normalized weight vector, and leaf list for a node read from ``src``.
+
+        ``src`` is the node's scheme source (not a materialized subset); its factorization is shared via
+        :meth:`_factorize`. The categorical and weight vector are cheap and always rebuilt — nodes over the
+        same ``(source, cols)`` differ only in ``weights``.
+        """
+        codes, leaves = self._factorize(src, node.source, node.cols)
+        return _flat_categorical(codes, leaves), _weight_vector(node.weights, leaves), leaves
+
+    def _prepare(self, scheme: Scheme, node: Node) -> tuple[Container, pd.Categorical, np.ndarray, list[tuple]]:
+        """A node's resolved source + its categorical, weight vector and leaf list (obs only).
+
+        An ``in_memory`` node is materialized into RAM here (positive-weight rows only): the row selection
+        reuses the *cached* source factorization rather than re-reading the source obs, and the subset's
+        own ``(codes, leaves)`` are derived by :func:`materialize_node` from that same factorization — so no
+        obs is factorized more than once. A non-materialized node reads straight from the scheme source.
+        """
+        src = scheme.sources[node.source]
+        if node.in_memory:
+            codes, leaves = self._factorize(src, node.source, node.cols)
+            src, codes, leaves = materialize_node(src, node, (codes, leaves))
+            return src, _flat_categorical(codes, leaves), _weight_vector(node.weights, leaves), leaves
+        cats, w, leaves = self._node_stats(src, node)
+        return src, cats, w, leaves
+
+
+def _flat_categorical(codes: np.ndarray, leaves: list[tuple]) -> pd.Categorical:
+    categories = pd.MultiIndex.from_tuples(leaves).to_flat_index()
+    return pd.Categorical.from_codes(codes, categories=categories)

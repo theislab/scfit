@@ -17,27 +17,23 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from os import PathLike
-from typing import TYPE_CHECKING, Union
 
 import anndata as ad
 import numpy as np
-from annbatch import DatasetCollection
+from anndata.acc import RefAcc
 
-if TYPE_CHECKING:
-    from anndata.acc import RefAcc
-
-# A representation location a node streams. Either a loc string — ``"X"`` | ``"obsm/<k>"`` |
-# ``"layers/<k>"`` — or the equivalent :mod:`anndata.acc` accessor describing the same spot
-# (``A.X`` | ``A.obsm["<k>"]`` | ``A.layers["<k>"]``). Accessors are normalized to the loc string in
-# :meth:`Node.__post_init__`, which stays the internal + batch-dict key.
-RepKey = Union[str, "RefAcc"]
+# A representation a node streams. Accepted as a loc string — ``"X"`` | ``"obsm/<k>"`` | ``"varm/<k>"`` |
+# ``"layers/<k>"`` — or as the equivalent :mod:`anndata.acc` accessor (``A.X`` | ``A.obsm["<k>"]`` |
+# ``A.layers["<k>"]``). :meth:`Node.__post_init__` normalizes to the loc string, the canonical locator
+# everywhere downstream (the batch-dict rep key, and how reps are read from a source).
+RepKey = str | RefAcc
 
 
 def _rep_loc(key: RepKey) -> str:
     """Normalize a rep key (loc string or :mod:`anndata.acc` accessor) to a loc string."""
     if isinstance(key, str):
         return key
-    dim, k = getattr(key, "dim", None), getattr(key, "k", None)  # anndata.acc reference
+    dim, k = getattr(key, "dim", None), getattr(key, "k", None)  # anndata.acc accessor
     if dim in ("obs", "var"):  # MultiAcc → obsm / varm
         return f"{dim}m/{k}"
     if k is None:  # LayerAcc with no key → X
@@ -45,9 +41,7 @@ def _rep_loc(key: RepKey) -> str:
     return f"layers/{k}"  # LayerAcc with a key → layers/<k>
 
 
-# A cell source: an in-memory/backed AnnData, an out-of-core annbatch DatasetCollection, or a list of
-# AnnData (streamed as one logical source — one annbatch backing per adata, in list order).
-Container = ad.AnnData | DatasetCollection | list[ad.AnnData]
+type Container = ad.AnnData | list[ad.AnnData]
 
 # A sampling scheme is just a mapping {combination -> weight}. A combination absent from the mapping
 # (or with weight 0) is excluded — that IS the selection. ``uniform`` / ``frequency`` /
@@ -128,11 +122,11 @@ class Node:
 
     def __post_init__(self) -> None:  # structural checks (data-free)
         keys = self.keys if isinstance(self.keys, tuple | list) else (self.keys,)  # str/accessor → single
-        object.__setattr__(self, "keys", tuple(_rep_loc(k) for k in keys))  # normalize accessors → loc str
-        if not self.cols:
-            raise ValueError("Node.cols must be non-empty.")
+        object.__setattr__(self, "keys", tuple(_rep_loc(k) for k in keys))  # normalize accessors → loc strings
         if not self.keys or any(not k for k in self.keys):
             raise ValueError("Node.keys must be one or more non-empty representation locations.")
+        if len(self.cols) == 0:
+            raise ValueError("Node.cols must be non-empty.")
         for k in self.weights:
             if len(k) != len(self.cols):
                 raise ValueError(f"weight key {k!r} arity != cols {self.cols}.")
@@ -308,7 +302,8 @@ class Scheme:
                 keys_by_src[node.source].update(node.keys)
                 cols_by_src[node.source].update(node.cols)
         resolved = {
-            name: open_source(src, keys=keys_by_src[name], cols=cols_by_src[name]) for name, src in sources.items()
+            name: open_source(src, keys=sorted(keys_by_src[name]), cols=sorted(cols_by_src[name]))
+            for name, src in sources.items()
         }
         return cls(sources=resolved, nodes=nodes, root=root, seed=seed, binds=binds)
 
