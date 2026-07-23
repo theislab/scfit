@@ -10,22 +10,14 @@ later — can reuse them by wiring a different sampler topology on top.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from importlib.util import find_spec
-
 import anndata as ad
 import numpy as np
 import pandas as pd
 from annbatch import DatasetCollection
 from annbatch import Loader as AnnbatchLoader  # annbatch's low-level per-rep loader (not binded's `Loader`)
-from annbatch.samplers import BoundClassSampler, ClassSampler
 
 from scfit.data._io import _readable, key_backings, leaf_codes, materialize_node, obs_columns
 from scfit.data._schema import Container, Node, SamplerConfig, Scheme, _weight_vector
-
-# annbatch's GPU path (cupy vstack/indexing → the batch is GPU-resident via dlpack) needs cupy. When it's
-# absent (CPU-only envs — Mac, CI), fall back so `to="torch"`/`"jax"` still yields a CPU array.
-_HAS_CUPY = find_spec("cupy") is not None
 
 
 def _is_backed(arr) -> bool:
@@ -120,23 +112,6 @@ class _SchemeReader:
         cats, w, leaves = self._node_stats(src, node)
         return src, cats, w, leaves
 
-    @staticmethod
-    def _emit_rep(out: dict, kind: str, reps: dict[str, np.ndarray], node: Node) -> None:
-        """Write a node's batch into ``out`` under ``kind`` (``"source"`` | ``"target"``).
-
-        The shared batch-dict schema both loaders emit: ``out[kind]`` is the primary streamed rep
-        (``node.keys[0]``), and ``out[f"{kind}_reps"]`` carries the full aligned-rep dict only when the node
-        streams more than one key.
-        """
-        out[kind] = reps[node.keys[0]]
-        if len(node.keys) > 1:
-            out[f"{kind}_reps"] = reps
-
-
-def _bind_on(inner_node: Node, bound_node: Node, common: Sequence[str]) -> dict[int, int]:
-    """Map inner-node tuple positions → bound-node tuple positions for each shared ``common`` column."""
-    return {inner_node.cols.index(c): bound_node.cols.index(c) for c in common}
-
 
 def _attach(loader: AnnbatchLoader, src: Container, key: str) -> AnnbatchLoader:
     """Feed rep ``key`` of ``src`` to a fresh annbatch ``Loader`` via the source-appropriate entry point.
@@ -156,28 +131,3 @@ def _attach(loader: AnnbatchLoader, src: Container, key: str) -> AnnbatchLoader:
     if isinstance(src, ad.AnnData) and not _is_backed(backings[0]):  # in-memory adata → add_adatas
         return loader.add_adatas([ad.AnnData(X=b) for b in backings])
     return loader.add_datasets(backings)  # backed adata or list of backed adata
-
-
-def _build_loaders(
-    src: Container,
-    node: Node,
-    cfg: SamplerConfig,
-    make_sampler: Callable[[], ClassSampler | BoundClassSampler],
-) -> dict[str, AnnbatchLoader]:
-    """Per rep (``node.keys``) an annbatch ``Loader`` over its own fresh sampler, fed via :func:`_attach`.
-
-    Reps need separate Loaders (annbatch can't mix feature dims in one loader), each with native chunked
-    reads.
-
-    ``to`` (default "torch") + ``preload_to_gpu`` come from the ``SamplerConfig``. ``to="torch"`` yields
-    native torch tensors (no host round-trip); ``preload_to_gpu`` keeps the read window on-GPU (needs cupy),
-    else it defers the device copy to the step. Auto-selects cupy when ``preload_to_gpu`` is unset.
-    """
-    preload_to_gpu = cfg.preload_to_gpu if cfg.preload_to_gpu is not None else _HAS_CUPY  # None ⇒ auto
-    loaders: dict[str, AnnbatchLoader] = {}
-    for key in node.keys:
-        base = AnnbatchLoader(
-            batch_sampler=make_sampler(), return_index=False, to=cfg.to, preload_to_gpu=preload_to_gpu
-        )
-        loaders[key] = _attach(base, src, key)
-    return loaders

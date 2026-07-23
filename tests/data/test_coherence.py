@@ -14,9 +14,9 @@ import pytest
 pytest.importorskip("annbatch")
 
 import anndata as ad
-from scheme_helpers import DRUG, DRUGS, IS_CONTROL, LINE, LINES, codes, encoded_adata, perturbation_scheme
+from scheme_helpers import DRUG, DRUGS, IS_CONTROL, LINE, LINES, ROW_ID, codes, encoded_adata, perturbation_scheme
 
-from scfit.data import Loader, SamplerConfig
+from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme, uniform
 
 _LINE, _DRUG = codes(LINES), codes(DRUGS)
 
@@ -34,8 +34,8 @@ def test_common_bind_target_condition_and_context_coherent():
     it = iter(loader)
     for _ in range(12):
         batch = next(it)
-        tgt = np.asarray(batch["target"])
-        src = np.asarray(batch["source"])
+        tgt = np.asarray(batch["pert"]["X"])  # target = root node "pert", rep "X" (batch keyed by node name)
+        src = np.asarray(batch["ctrl"]["X"])  # source = bound child "ctrl", rep "X"
         cond = np.asarray(batch["condition"]["condition"])
 
         # target batch is one perturbed condition
@@ -56,9 +56,77 @@ def test_reps_are_aligned_same_cells():
     scheme = perturbation_scheme(encoded_adata(LINES, DRUGS, 16, obsm_rep=True), key=("X", "obsm/rep"), ctrl_key="X")
     loader = Loader(scheme, SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8))
     batch = next(iter(loader))
-    x = np.asarray(batch["target_reps"]["X"])
-    rep = np.asarray(batch["target_reps"]["obsm/rep"])
+    x = np.asarray(batch["pert"]["X"])
+    rep = np.asarray(batch["pert"]["obsm/rep"])
     np.testing.assert_array_equal(x, rep)  # aligned reps must be the same cells
+
+
+def test_reps_from_distinct_stores_are_the_same_cells():
+    # The robust way to test rep alignment: make the second rep a *distinct* store (not a copy of X) that
+    # still carries each cell's unique ROW_ID, then check the ids line up PER POSITION across a whole pass.
+    # That proves the "obsm/rep" loader reads its own array AND draws the same cells, in the same order, as
+    # the "X" loader — the guarantee the per-rep deepcopy'd samplers provide; a desync would break it.
+    adata = encoded_adata(LINES, DRUGS, 16)
+    rid = adata.X[:, ROW_ID]
+    adata.obsm["rep"] = np.stack([rid, -rid], axis=1).astype("float32")  # distinct payload, id recoverable
+    scheme = perturbation_scheme(adata, key=("X", "obsm/rep"), ctrl_key="X")
+    loader = Loader(scheme, SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8))
+    it = iter(loader)
+    for _ in range(loader._n_batches):
+        reps = next(it)["pert"]  # the root node's aligned reps {loc: rows}
+        x, rep = np.asarray(reps["X"]), np.asarray(reps["obsm/rep"])
+        np.testing.assert_array_equal(rep[:, 0], x[:, ROW_ID])  # same cell per position (row-for-row)
+        np.testing.assert_array_equal(rep[:, 1], -x[:, ROW_ID])  # and it really is obsm/rep, not X again
+
+
+def test_source_reps_are_aligned_same_cells():
+    # Aligned reps apply to the bound control (source) node too — its reps read the same control cells.
+    scheme = perturbation_scheme(encoded_adata(LINES, DRUGS, 16, obsm_rep=True), key="X", ctrl_key=("X", "obsm/rep"))
+    loader = Loader(scheme, SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8))
+    reps = next(iter(loader))["ctrl"]  # the bound child's aligned reps {loc: rows}
+    np.testing.assert_array_equal(np.asarray(reps["X"])[:, ROW_ID], np.asarray(reps["obsm/rep"])[:, ROW_ID])
+
+
+def test_more_than_two_reps_all_aligned():
+    # deepcopy-per-rep generalizes beyond two: three reps of the target all read the same cells.
+    adata = encoded_adata(LINES, DRUGS, 16, obsm_rep=True)  # adds obsm["rep"]
+    adata.obsm["rep2"] = adata.X.copy()
+    scheme = perturbation_scheme(adata, key=("X", "obsm/rep", "obsm/rep2"), ctrl_key="X")
+    loader = Loader(scheme, SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8))
+    reps = next(iter(loader))["pert"]  # the root node's aligned reps {loc: rows}
+    x = np.asarray(reps["X"])[:, ROW_ID]
+    np.testing.assert_array_equal(np.asarray(reps["obsm/rep"])[:, ROW_ID], x)
+    np.testing.assert_array_equal(np.asarray(reps["obsm/rep2"])[:, ROW_ID], x)
+
+
+def test_multiple_bound_sources_are_keyed_by_child_name():
+    # Two children bound to the root on DIFFERENT columns must both appear in the batch, keyed by their
+    # own node names — they used to clobber a single `out["source"]`. Each is matched on its own bind column.
+    import pandas as pd
+
+    obs = pd.DataFrame(
+        [(ln, dr) for ln in ("A", "B") for dr in ("d1", "d2") for _ in range(24)], columns=["line", "drug"]
+    )
+    lc, dc = codes(("A", "B")), codes(("d1", "d2"))
+    x = np.stack([obs["line"].map(lc), obs["drug"].map(dc)], axis=1).astype("float32")  # [line code, drug code]
+    scheme = Scheme(
+        sources={"data": ad.AnnData(x, obs=obs)},
+        nodes={
+            "root": Node(
+                "data", ("line", "drug"), "X", uniform([(ln, dr) for ln in ("A", "B") for dr in ("d1", "d2")])
+            ),
+            "on_line": Node("data", ("line",), "X", uniform([("A",), ("B",)])),
+            "on_drug": Node("data", ("drug",), "X", uniform([("d1",), ("d2",)])),
+        },
+        root="root",
+        binds=(Bind("root", "on_line", ("line",)), Bind("root", "on_drug", ("drug",))),
+        seed=0,
+    )
+    batch = next(iter(Loader(scheme, SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8))))
+    assert set(batch) == {"root", "on_line", "on_drug"}  # every node present, keyed by name (no clobber)
+    tgt = np.asarray(batch["root"]["X"])
+    assert np.all(np.asarray(batch["on_line"]["X"])[:, 0] == tgt[0, 0])  # on_line matched on the line column
+    assert np.all(np.asarray(batch["on_drug"]["X"])[:, 1] == tgt[0, 1])  # on_drug matched on the drug column
 
 
 def test_materialize_node_selects_positive_weight_rows():
@@ -81,10 +149,10 @@ def test_materialize_node_selects_positive_weight_rows():
 
 def test_in_memory_node_materialized():
     # Node.in_memory → the loader materializes that node into RAM (served from memory, not re-read each
-    # batch). SamplerConfig also carries the user-set `to` / `preload_to_gpu` (exercised here).
+    # batch). Per-node `to` and the global `preload_to_gpu` Loader arg are exercised here.
     scheme = perturbation_scheme(encoded_adata(LINES, DRUGS, 16), ctrl_in_memory=True)
-    cfg = SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8, to="torch", preload_to_gpu=False)
-    dl = Loader(scheme, cfg, condition_lookup=_condition_lookup)
+    cfg = SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8, to="torch")
+    dl = Loader(scheme, cfg, condition_lookup=_condition_lookup, preload_to_gpu=False)
     assert isinstance(dl._nodes["ctrl"], ad.AnnData)  # ctrl node materialized into RAM
     batch = next(iter(dl))
-    assert (np.asarray(batch["source"])[:, IS_CONTROL] == 1.0).all()  # source = matched control cells (from RAM)
+    assert (np.asarray(batch["ctrl"]["X"])[:, IS_CONTROL] == 1.0).all()  # source = bound child "ctrl", rep "X"

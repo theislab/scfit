@@ -153,9 +153,9 @@ def test_from_paths_streams_matched_batches(tmp_path, make_source):
     )
 
     batch = next(iter(Loader(s, _cfg())))
-    assert batch["target"].shape == (16, 5)
-    assert batch["source"].shape == (16, 5)  # matched control rows
-    assert batch["source_reps"]["obsm/emb"].shape == (16, 3)  # aligned obsm rep of the same cells
+    assert batch["pert"]["X"].shape == (16, 5)  # batch keyed by node name → rep loc
+    assert batch["ctrl"]["X"].shape == (16, 5)  # matched control rows
+    assert batch["ctrl"]["obsm/emb"].shape == (16, 3)  # aligned obsm rep of the same cells
 
 
 # ── Node.keys accepts anndata.acc accessors (normalized to loc strings) ────────────────────────
@@ -188,4 +188,4 @@ def test_from_paths_streams_with_accessor_keys(tmp_path):
 
     assert list(s.sources["data"].obsm) == ["emb"]  # accessor-described rep resolved & loaded
     batch = next(iter(Loader(s, _cfg())))
-    assert batch["source_reps"]["obsm/emb"].shape == (16, 3)  # keyed by the normalized loc string
+    assert batch["ctrl"]["obsm/emb"].shape == (16, 3)  # keyed by child node name, then normalized loc string

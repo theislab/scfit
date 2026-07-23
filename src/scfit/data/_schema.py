@@ -192,16 +192,14 @@ class SamplerConfig:
     to
         annbatch ``Loader`` output backend for the yielded batches — ``"torch"`` (default), ``"jax"``, or
         :obj:`None` (annbatch's own default). Forwarded verbatim to :class:`annbatch.Loader`.
-    preload_to_gpu
-        Whether annbatch keeps the read window on-GPU (needs ``cupy``). :obj:`None` (default) auto-selects
-        it from cupy availability; pass ``True``/``False`` to force it.
+
+    (``preload_to_gpu`` is not here — it is one global :class:`~scfit.data.Loader` argument, not per-node.)
     """
 
     batch_size: int
     chunk_size: int
     preload_nchunks: int
     to: str = "torch"
-    preload_to_gpu: bool | None = None
 
 
 def _resolve_config_map(
@@ -260,8 +258,8 @@ class Scheme:
     root
         Name of the root node (must have no parent).
     seed
-        Reproducibility seed. Per-node RNG streams are spawned from one ``SeedSequence(seed)`` so nodes
-        do not correlate and the whole stream is reproducible.
+        Reproducibility seed. The loader builds a local ``np.random.default_rng(seed)`` and spawns one
+        independent sub-stream per node, so nodes do not correlate and the whole stream is reproducible.
     binds
         Parent→child links (see :class:`Bind`). Must form a rooted tree over ``nodes``.
 
