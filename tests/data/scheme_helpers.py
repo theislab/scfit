@@ -6,7 +6,7 @@ cell lines × drugs, with ``control`` marking the control drug:
 
 * :func:`encoded_adata` — X *encodes each cell's identity* (``[cell_line, drug, is_control, row_id]``, see
   the :data:`LINE`/:data:`DRUG`/:data:`IS_CONTROL`/:data:`ROW_ID` column indices), so a yielded batch row
-  can be decoded and checked against the leaf it must belong to (use :func:`row_ids` to read the ids back).
+  can be decoded and checked against the leaf it must belong to.
 * :func:`feature_adata` — a realistic random matrix, for metric / pickle tests that don't decode identity.
 * :func:`perturbation_scheme` — the two-node ``perturbed root ← bound control`` Scheme over any such source
   (matched on ``context``); options cover an in-memory control and per-node reps.
@@ -116,11 +116,6 @@ def write_zarr(adata: ad.AnnData, path) -> str:
         warnings.simplefilter("ignore")
         adata.write_zarr(str(path))
     return str(path)
-
-
-def row_ids(batch_x) -> set[int]:
-    """The global row ids (X column :data:`ROW_ID`) of a decoded batch — for :func:`encoded_adata` sources."""
-    return set(np.asarray(batch_x)[:, ROW_ID].astype(int).tolist())
 
 
 def perturbation_scheme(
