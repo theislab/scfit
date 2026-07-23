@@ -16,7 +16,9 @@ Importable bare (``from scheme_helpers import ...``) via the ``pythonpath = ["te
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
+from itertools import islice
 
 import anndata as ad
 import numpy as np
@@ -160,3 +162,37 @@ def perturbation_scheme(
         binds=(Bind("pert", "ctrl", common=context),),
         seed=seed,
     )
+
+
+# ── batch-reading helpers (the read side; they hide the {node: {rep loc: rows}} batch schema) ──────────
+
+
+def rep(batch, node: str, key: str = "X") -> np.ndarray:
+    """Rows of one rep of a node's batch — ``batch[node][key]`` as a dense ndarray."""
+    return np.asarray(batch[node][key])
+
+
+def only_leaf(rows: np.ndarray) -> tuple[int, int]:
+    """Assert ``rows`` is a single leaf and return its decoded ``(cell_line, drug)`` codes.
+
+    For an :func:`encoded_adata` batch: X column :data:`LINE`/:data:`DRUG` hold the codes, so a pure batch
+    has exactly one unique value in each. Raises (via assert) if the batch mixes conditions — which is also
+    how the pureness tests check coherence.
+    """
+    line, drug = np.unique(rows[:, LINE]), np.unique(rows[:, DRUG])
+    assert line.size == 1 and drug.size == 1, "batch mixes conditions"
+    return int(line[0]), int(drug[0])
+
+
+def leaf_shares(loader, node: str, n: int) -> dict[tuple[int, int], float]:
+    """Empirical fraction of ``n`` batches whose ``node`` batch is each leaf (decoded from X)."""
+    seen = Counter(only_leaf(rep(b, node)) for b in islice(loader, n))
+    total = sum(seen.values())
+    return {leaf: c / total for leaf, c in seen.items()}
+
+
+def assert_shares(actual: Mapping, expected: Mapping, atol: float = 0.03) -> None:
+    """Assert the sampled leaf set equals ``expected`` and each share is within ``atol`` of its target."""
+    assert set(actual) == set(expected), f"sampled leaves {sorted(actual)} != {sorted(expected)}"
+    for leaf, exp in expected.items():
+        assert abs(actual[leaf] - exp) <= atol, f"{leaf}: share {actual[leaf]:.3f} vs expected {exp}"
