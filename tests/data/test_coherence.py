@@ -25,10 +25,10 @@ from scheme_helpers import (
     codes,
     encoded_adata,
     perturbation_scheme,
+    uniform,
 )
 
 from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme
-from scfit.data._schema import uniform
 
 _LINE, _DRUG = codes(LINES), codes(DRUGS)
 

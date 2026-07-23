@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import zarr
 
-from scfit.data._schema import Container, Node
+from scfit.data._schema import Container, Node, weight_vector
 
 __all__ = [
     "get_from_container",
@@ -71,6 +71,7 @@ def _read_rows(source: Container, loc: str, row_idx: np.ndarray) -> np.ndarray:
     return np.concatenate(parts, axis=0) if parts else np.empty((0, int(backings[0].shape[1])), dtype=np.float32)
 
 
+# TODO: remove this, this shouldn't be our concern
 def materialize_node(
     source: Container, node: Node, factorization: tuple[np.ndarray, list[tuple]] | None = None
 ) -> tuple[ad.AnnData, np.ndarray, list[tuple]]:
@@ -88,11 +89,9 @@ def materialize_node(
     :func:`leaf_codes` over ``node.cols`` — to reuse a cached one (the source obs is then never factorized
     a second time); omit it and it is computed here for standalone use.
     """
-    from scfit.data._schema import _weight_vector
-
     obs = obs_columns(source, node.cols)
     codes, leaves = factorization if factorization is not None else leaf_codes(obs, node.cols)
-    selected = np.flatnonzero(_weight_vector(node.weights, leaves) > 0)  # leaf codes with positive weight
+    selected = np.flatnonzero(weight_vector(node.weights, leaves) > 0)  # leaf codes with positive weight
     row_idx = np.flatnonzero(np.isin(codes, selected))  # ascending global rows of the selected leaves
     reps = {key: _read_rows(source, key, row_idx) for key in node.keys}  # keyed by loc string
     sub_obs = obs.iloc[row_idx].reset_index(drop=True)

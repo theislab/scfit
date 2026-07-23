@@ -30,7 +30,7 @@ from scfit.data._io import (
     materialize_node,
     obs_columns,
 )
-from scfit.data._schema import Container, Node, SamplerConfig, Scheme, _resolve_config_map, _weight_vector
+from scfit.data._schema import Container, Node, SamplerConfig, Scheme, _resolve_config_map, weight_vector
 
 __all__ = ["Annotations", "Loader"]
 
@@ -276,7 +276,7 @@ class Loader:
         same ``(source, cols)`` differ only in ``weights``.
         """
         codes, leaves = self._factorize(src, node.source, node.cols)
-        return _flat_categorical(codes, leaves), _weight_vector(node.weights, leaves), leaves
+        return _flat_categorical(codes, leaves), weight_vector(node.weights, leaves), leaves
 
     def _prepare(self, scheme: Scheme, node: Node) -> tuple[Container, pd.Categorical, np.ndarray, list[tuple]]:
         """A node's resolved source + its categorical, weight vector and leaf list (obs only).
@@ -290,7 +290,7 @@ class Loader:
         if node.in_memory:
             codes, leaves = self._factorize(src, node.source, node.cols)
             src, codes, leaves = materialize_node(src, node, (codes, leaves))
-            return src, _flat_categorical(codes, leaves), _weight_vector(node.weights, leaves), leaves
+            return src, _flat_categorical(codes, leaves), weight_vector(node.weights, leaves), leaves
         cats, w, leaves = self._node_stats(src, node)
         return src, cats, w, leaves
 

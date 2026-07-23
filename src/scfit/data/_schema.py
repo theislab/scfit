@@ -56,28 +56,10 @@ __all__ = [
     "SamplerConfig",
     "Scheme",
     "Weights",
-    "frequency",
-    "inverse_frequency",
-    "uniform",
 ]
 
 
-def uniform(combos: Sequence[tuple]) -> dict[tuple, float]:
-    """Every combination equally likely."""
-    return {tuple(c): 1.0 for c in combos}
-
-
-def frequency(counts: Mapping[tuple, int]) -> dict[tuple, float]:
-    """Sample each combination ∝ its cell count (favor abundant conditions)."""
-    return {tuple(k): float(c) for k, c in counts.items()}
-
-
-def inverse_frequency(counts: Mapping[tuple, int]) -> dict[tuple, float]:
-    """Sample each combination ∝ 1 / cell count (balance rare vs abundant conditions)."""
-    return {tuple(k): 1.0 / c for k, c in counts.items()}
-
-
-def _weight_vector(weights: Weights, leaves: Sequence[tuple]) -> np.ndarray:
+def weight_vector(weights: Weights, leaves: Sequence[tuple]) -> np.ndarray:
     """Resolve ``{combo: weight}`` to normalized per-leaf weights (→ ``ClassSampler.class_weights``)."""
     v = np.array([float(weights.get(tuple(lf), 0.0)) for lf in leaves], dtype=float)
     s = v.sum()

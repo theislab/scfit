@@ -13,10 +13,9 @@ import pytest
 
 pytest.importorskip("annbatch")
 
-from scheme_helpers import encoded_adata, only_leaf, rep
+from scheme_helpers import encoded_adata, only_leaf, rep, uniform
 
 from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme
-from scfit.data._schema import uniform
 
 COLS = ("cell_line", "drug")
 PERT = [(cl, dr) for cl in ("A", "B") for dr in ("d1", "d2", "d3")]
