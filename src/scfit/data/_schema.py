@@ -1,14 +1,15 @@
 r"""Declarative schema for :class:`~binded.Loader`.
 
-A :class:`Scheme` is a rooted tree of :class:`Node`\\s over named cell *sources* — pure structure
-(sources, grouping columns, weights, binds). How each node is *read* (chunk / preload / batch sizes)
+A :class:`Scheme` is a root :class:`Node` (the target) plus its direct children over named cell
+*sources* — a depth-1 star, pure structure (sources, grouping columns, weights, binds). How each node
+is *read* (chunk / preload / batch sizes)
 lives in a separate :class:`SamplerConfig` passed to the loader, deliberately kept off the ``Node`` so
 the same structure can be run with different sampler settings.
 
 Each node partitions its source's cells into **leaves** (unique combinations of ``cols``) with a
 per-combination :data:`Weights` mapping. A weight of 0 (or a combination absent from the mapping) is
-*excluded* — that IS the selection, native to annbatch's ``ClassSampler``. :class:`Bind` links a
-parent to a child on shared columns, so the child is sampled *conditioned* on the parent's values.
+*excluded* — that IS the selection, native to annbatch's ``ClassSampler``. :class:`Bind` links the
+root to a child on shared columns, so the child is sampled *conditioned* on the root's values.
 See ``README.md`` for the model and the cellflow / sc-flow-tools mapping.
 """
 
@@ -94,7 +95,7 @@ class Node:
     source
         Key into :attr:`Scheme.sources`.
     cols
-        Tree levels → leaves are the unique combinations of these columns (over ALL the source's
+        Grouping levels → leaves are the unique combinations of these columns (over ALL the source's
         cells). These are the grouping/condition columns (cellflow's ``split_covariates`` +
         ``perturbation_covariates`` columns; sc-flow-tools' grouping keys).
     keys
@@ -308,7 +309,7 @@ class Scheme:
         }
         return cls(sources=resolved, nodes=nodes, root=root, seed=seed, binds=binds)
 
-    def __post_init__(self) -> None:  # structural: rooted tree + references
+    def __post_init__(self) -> None:  # structural: depth-1 star + references
         if self.root not in self.nodes:
             raise ValueError(f"root {self.root!r} not in nodes.")
         for name, n in self.nodes.items():
@@ -333,4 +334,4 @@ class Scheme:
             raise ValueError("root must have no parent.")
         for name in self.nodes:
             if name != self.root and name not in parents:
-                raise ValueError(f"non-root node {name!r} is not bound to the tree.")
+                raise ValueError(f"non-root node {name!r} is not bound to the root.")
