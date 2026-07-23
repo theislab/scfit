@@ -16,12 +16,13 @@ pytest.importorskip("annbatch")
 import anndata as ad
 from scheme_helpers import DRUG, DRUGS, IS_CONTROL, LINE, LINES, ROW_ID, codes, encoded_adata, perturbation_scheme
 
-from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme, uniform
+from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme
+from scfit.data._schema import uniform
 
 _LINE, _DRUG = codes(LINES), codes(DRUGS)
 
 
-def _condition_lookup(leaf: tuple) -> dict[str, np.ndarray]:
+def _annotate(leaf: tuple) -> dict[str, np.ndarray]:
     return {"condition": np.array([[_LINE[leaf[0]], _DRUG[leaf[1]]]], dtype=np.int64)}
 
 
@@ -29,14 +30,14 @@ def test_common_bind_target_condition_and_context_coherent():
     loader = Loader(
         perturbation_scheme(encoded_adata(LINES, DRUGS, 16)),
         SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8),
-        condition_lookup=_condition_lookup,
+        annotations=_annotate,
     )
     it = iter(loader)
     for _ in range(12):
         batch = next(it)
         tgt = np.asarray(batch["pert"]["X"])  # target = root node "pert", rep "X" (batch keyed by node name)
         src = np.asarray(batch["ctrl"]["X"])  # source = bound child "ctrl", rep "X"
-        cond = np.asarray(batch["condition"]["condition"])
+        cond = np.asarray(batch["annotations"]["condition"])
 
         # target batch is one perturbed condition
         assert len(np.unique(tgt[:, LINE])) == 1, "target batch mixes cell lines"
@@ -152,7 +153,7 @@ def test_in_memory_node_materialized():
     # batch). Per-node `to` and the global `preload_to_gpu` Loader arg are exercised here.
     scheme = perturbation_scheme(encoded_adata(LINES, DRUGS, 16), ctrl_in_memory=True)
     cfg = SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8, to="torch")
-    dl = Loader(scheme, cfg, condition_lookup=_condition_lookup, preload_to_gpu=False)
+    dl = Loader(scheme, cfg, annotations=_annotate, preload_to_gpu=False)
     assert isinstance(dl._nodes["ctrl"], ad.AnnData)  # ctrl node materialized into RAM
     batch = next(iter(dl))
     assert (np.asarray(batch["ctrl"]["X"])[:, IS_CONTROL] == 1.0).all()  # source = bound child "ctrl", rep "X"

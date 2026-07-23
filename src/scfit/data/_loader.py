@@ -4,7 +4,7 @@ Each pass is a fresh epoch. The root (target) node draws a per-batch class sched
 annbatch :class:`~annbatch.samplers.ClassSampler`; every bound child replays that schedule onto its own
 cells via an annbatch :class:`~annbatch.samplers.BoundClassSampler` — matched by *label* on the bind's
 ``common`` columns (select via child weights + project via ``common``). A batch is ``{node name: {rep
-loc: rows}}`` for the root and every bound child, plus ``"condition"`` — the consumer reads the target
+loc: rows}}`` for the root and every bound child, plus ``"annotations"`` — the consumer reads the target
 from ``scheme.root`` and the sources from the bound children. Every sampler that must agree within a pass
 (the schedule oracle, the target's reps, and each child's inner) is a ``deepcopy`` of the same seeded
 oracle state, so they stay in lockstep, a node's reps read the same rows, and a pickled loader resumes
@@ -13,7 +13,7 @@ the exact same stream. See ``README.md``.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from copy import deepcopy
 from typing import TYPE_CHECKING
 
@@ -23,7 +23,6 @@ import pandas as pd
 from annbatch import Loader as AnnbatchLoader  # annbatch's low-level per-rep loader (not binded's `Loader`)
 from annbatch.samplers import BoundClassSampler, ClassSampler
 
-from scfit.data._condition import ConditionLookup, _condition_from_lookup
 from scfit.data._io import (
     get_from_container,
     is_backed_array,
@@ -33,7 +32,11 @@ from scfit.data._io import (
 )
 from scfit.data._schema import Container, Node, SamplerConfig, Scheme, _resolve_config_map, _weight_vector
 
-__all__ = ["Loader"]
+__all__ = ["Annotate", "Loader"]
+
+# A per-batch annotation callback: the root's drawn leaf (its ``cols`` tuple) → named arrays for that
+# batch (e.g. the perturbation encoding). Whatever it returns is placed verbatim under ``"annotations"``.
+type Annotate = Callable[[tuple], Mapping[str, np.ndarray]]
 
 if TYPE_CHECKING:
     from scfit.data._schema import Bind, Container, SamplerConfig, Scheme
@@ -44,7 +47,7 @@ class Loader:
         self,
         scheme: Scheme,
         sampler_config: SamplerConfig | Mapping[str, SamplerConfig],
-        condition_lookup: ConditionLookup | None = None,
+        annotations: Annotate | None = None,
         *,
         preload_to_gpu: bool = False,
     ) -> None:
@@ -52,7 +55,7 @@ class Loader:
         # emptied on pickle (each node's categorical already carries its own codes).
         self._leaf_cache: dict[tuple[str, tuple[str, ...]], tuple[np.ndarray, list[tuple]]] = {}
         self.scheme = scheme
-        self._condition_lookup = condition_lookup
+        self._annotations = annotations
         self._preload_to_gpu = preload_to_gpu
         self._cfg = self._resolve_configs(sampler_config)
         self._root_batch_size = self._cfg[
@@ -222,9 +225,9 @@ class Loader:
         out: dict = {self.scheme.root: self._nodes_next(self.scheme.root)}
         for b in self._child_binds:  # bound child sources, replayed via their BoundClassSamplers
             out[b.child] = self._nodes_next(b.child)
-        if self._condition_lookup is not None:
+        if self._annotations is not None:
             leaf = self._st[self.scheme.root]["leaves"][int(self._schedule[j])]  # per-batch category (root leaf)
-            out["condition"] = _condition_from_lookup(self._condition_lookup, leaf)
+            out["annotations"] = self._annotations(leaf)
         return out
 
     def _factorize(self, src: Container, source: str, cols: tuple[str, ...]) -> tuple[np.ndarray, list[tuple]]:

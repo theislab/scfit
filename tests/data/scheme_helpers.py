@@ -22,9 +22,9 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 
-from scfit.data import Bind, Node, Scheme, uniform
+from scfit.data import Bind, Node, Scheme
 from scfit.data._io import obs_columns
-from scfit.data._schema import Container
+from scfit.data._schema import Container, uniform
 
 LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2", "d3")
