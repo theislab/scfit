@@ -59,7 +59,6 @@ class Loader:
             self.scheme.root
         ].batch_size  # root/target batch size — drives the pass length
 
-        # root's direct children are the bound sources (parity with the previous loader: depth-1 sources)
         self._child_binds: list[Bind] = [b for b in scheme.binds if b.parent == self.scheme.root]
 
         # one independent sub-generator per node (spawned off a fresh local `default_rng(scheme.seed)`, so

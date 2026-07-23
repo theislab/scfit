@@ -1,8 +1,9 @@
 r"""Declarative, index-free class-mapping sampler over annbatch.
 
-A :class:`Scheme` is a rooted tree of :class:`Node`\\s over named cell sources; each node partitions
-its source's cells into leaves (unique column-combinations) with a per-combination weight mapping.
-:class:`Loader` streams matched ``{source, target, condition}`` batches — one condition per
+A :class:`Scheme` is a root :class:`Node` (the target) plus its direct children over named cell
+sources — a depth-1 star; each node partitions its source's cells into leaves (unique
+column-combinations) with a per-combination weight mapping. :class:`Loader` streams matched batches
+keyed by node name (``{node name: {rep loc: rows}}``, plus ``"condition"``) — one condition per
 batch — where the root's per-batch category is drawn from its weights (annbatch ``ClassSampler``) and
 each bound child replays that schedule via an annbatch ``BoundClassSampler`` (matched on the bind's
 shared columns) so the loaders zip batch-for-batch. No row indices are exposed: the scheme is
@@ -21,10 +22,6 @@ from scfit.data._schema import (
     Node,
     SamplerConfig,
     Scheme,
-    Weights,
-    frequency,
-    inverse_frequency,
-    uniform,
 )
 from scfit.data._split import resolve_split_configs, split_assignment, split_scheme
 
@@ -36,12 +33,8 @@ __all__ = [
     "Node",
     "SamplerConfig",
     "Scheme",
-    "Weights",
-    "frequency",
-    "inverse_frequency",
     "leaf_codes",
     "resolve_split_configs",
     "split_assignment",
     "split_scheme",
-    "uniform",
 ]
