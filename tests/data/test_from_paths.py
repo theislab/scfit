@@ -19,8 +19,9 @@ import scipy.sparse as sp
 from annbatch import DatasetCollection
 from scheme_helpers import perturbation_obs, write_zarr
 
-from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme, uniform
+from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme
 from scfit.data._io import load_backed_adata
+from scfit.data._schema import uniform
 
 LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2")

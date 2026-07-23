@@ -246,7 +246,7 @@ class Scheme:
     Parameters
     ----------
     sources
-        ``{name: AnnData | DatasetCollection}`` — the cell sources the nodes reference.
+        ``{name: AnnData | list[AnnData]}`` — the cell sources the nodes reference.
     nodes
         ``{name: Node}``. Exactly one is the ``root`` (the streamed target); the rest are bound
         children (sources/controls) via ``binds``.

@@ -16,7 +16,7 @@ from scfit.data import Loader, SamplerConfig
 
 def _loader(seed=0):
     scheme = perturbation_scheme(feature_adata(("A", "B"), ("control", "d1", "d2"), 16, n_genes=4), seed=seed)
-    # condition_lookup omitted so the loader is plain-picklable (no closure); state/RNG is what we test here
+    # annotations omitted so the loader is plain-picklable (no closure); state/RNG is what we test here
     return Loader(scheme, SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8))
 
 
