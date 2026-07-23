@@ -1,12 +1,11 @@
 r"""annbatch adapter — shared plumbing between binded's ``Scheme`` and annbatch's samplers/loaders.
 
 Turns a :class:`~binded.Scheme`'s nodes/sources into annbatch samplers + :class:`~annbatch.Loader`\\s.
-Both loaders sit on top of this layer: :class:`~binded.Loader` (target-rooted, random epoch) and
-:class:`~binded.EvalLoader` (control-rooted, deterministic sweep) share the *how* — resolve a node's
+:class:`~binded.Loader` (target-rooted, random epoch) sits on top of this layer: resolve a node's
 source, build the tuple-labelled categorical the bound sampler matches on, and wire one annbatch
-``Loader`` per rep — and differ only in the sampler topology they wire on top. Keeping these primitives
-here (rather than importing them across the two loader modules) is what makes that split principled:
-neither loader reaches into the other's internals.
+``Loader`` per rep. These primitives are kept source-kind-agnostic and loader-agnostic here (rather than
+inlined into the loader) so a second loader — e.g. a control-rooted deterministic eval sweep, added
+later — can reuse them by wiring a different sampler topology on top.
 """
 
 from __future__ import annotations
@@ -56,15 +55,15 @@ def _flat_categorical(codes: np.ndarray, leaves: list[tuple]) -> pd.Categorical:
 
 
 class _SchemeReader:
-    """Base for the loaders: resolves each node's source and factorizes each source's obs ONCE.
+    """Base for the loader(s): resolves each node's source and factorizes each source's obs ONCE.
 
-    Both :class:`~scfit.data.Loader` and :class:`~scfit.data.EvalLoader` need the same per-node primitive —
-    the resolved source (a ``Node.in_memory`` node materialized into RAM) plus its tuple-labelled
-    categorical, weight vector and leaf list. A scheme source's obs is read + factorized ONCE per
-    ``(source, cols)`` via :meth:`_factorize`'s cache, and that single ``(codes, leaves)`` is reused across
-    every node over the same ``(source, cols)`` — a backed node's categorical *and* (through
-    :func:`materialize_node`) an ``in_memory`` sibling's row selection — so the (possibly 100M-row) source
-    obs is never factorized twice. Holding the cache on the instance is why neither loader threads it.
+    Holds the per-node primitive :class:`~scfit.data.Loader` (and a later eval loader) needs — the resolved
+    source (a ``Node.in_memory`` node materialized into RAM) plus its tuple-labelled categorical, weight
+    vector and leaf list. A scheme source's obs is read + factorized ONCE per ``(source, cols)`` via
+    :meth:`_factorize`'s cache, and that single ``(codes, leaves)`` is reused across every node over the
+    same ``(source, cols)`` — a backed node's categorical *and* (through :func:`materialize_node`) an
+    ``in_memory`` sibling's row selection — so the (possibly 100M-row) source obs is never factorized twice.
+    Holding the cache on the instance is why the loader never threads it through its own methods.
     """
 
     def __init__(self) -> None:

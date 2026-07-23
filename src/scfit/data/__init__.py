@@ -13,7 +13,6 @@ cellflow and sc-flow-tools use-cases.
 """
 
 from scfit.data._condition import ConditionLookup
-from scfit.data._eval_loader import EvalLoader
 from scfit.data._loader import Loader
 from scfit.data._schema import (
     Bind,
@@ -32,7 +31,6 @@ __all__ = [
     "Bind",
     "ConditionLookup",
     "Container",
-    "EvalLoader",
     "Loader",
     "Node",
     "SamplerConfig",
