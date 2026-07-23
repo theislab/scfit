@@ -1,57 +1,65 @@
-"""``Loader`` — streams matched ``{source, target, condition}`` batches from a :class:`Scheme`.
+"""``Loader`` — streams matched per-node batches from a :class:`Scheme`, keyed by node name.
 
 Each pass is a fresh epoch. The root (target) node draws a per-batch class schedule ∝ its weights via an
 annbatch :class:`~annbatch.samplers.ClassSampler`; every bound child replays that schedule onto its own
 cells via an annbatch :class:`~annbatch.samplers.BoundClassSampler` — matched by *label* on the bind's
-``common`` columns (select via child weights + project via ``common``). The loader
-never wraps annbatch's RNG: every sampler that must agree within a pass (the schedule oracle, the target
-reps, and each child's inner) is **reseeded from one per-pass seed** ``(node seed, pass index)``, so
-target/condition/source stay aligned, a node's reps read the same rows, and a pickled loader resumes the
-exact same stream. See ``README.md``.
+``common`` columns (select via child weights + project via ``common``). A batch is ``{node name: {rep
+loc: rows}}`` for the root and every bound child, plus ``"condition"`` — the consumer reads the target
+from ``scheme.root`` and the sources from the bound children. Every sampler that must agree within a pass
+(the schedule oracle, the target's reps, and each child's inner) is a ``deepcopy`` of the same seeded
+oracle state, so they stay in lockstep, a node's reps read the same rows, and a pickled loader resumes
+the exact same stream. See ``README.md``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
+from copy import deepcopy
+from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
 from annbatch import Loader as AnnbatchLoader  # annbatch's low-level per-rep loader (not binded's `Loader`)
 from annbatch.samplers import BoundClassSampler, ClassSampler
 
-from scfit.data._backend import _bind_on, _build_loaders, _SchemeReader
+from scfit.data._backend import _attach, _SchemeReader
 from scfit.data._condition import ConditionLookup, _condition_from_lookup
-from scfit.data._schema import Bind, Container, SamplerConfig, Scheme, _resolve_config_map
+from scfit.data._schema import _resolve_config_map
 
 __all__ = ["Loader"]
 
+if TYPE_CHECKING:
+    from scfit.data._schema import Bind, Container, SamplerConfig, Scheme
+
 
 class Loader(_SchemeReader):
-    """Yields ``{"source", "target", "condition"}`` batches; every node streams through its own loader."""
-
     def __init__(
         self,
         scheme: Scheme,
         sampler_config: SamplerConfig | Mapping[str, SamplerConfig],
         condition_lookup: ConditionLookup | None = None,
+        *,
+        preload_to_gpu: bool = False,
     ) -> None:
         super().__init__()  # the shared per-(source, cols) obs-factorization cache (`_factorize`)
-        self.s = scheme
+        self.scheme = scheme
         self._condition_lookup = condition_lookup
+        self._preload_to_gpu = preload_to_gpu
         self._cfg = self._resolve_configs(sampler_config)
-        self._B = self._cfg[self.s.root].batch_size  # root/target batch size — drives the pass length
+        self._root_batch_size = self._cfg[
+            self.scheme.root
+        ].batch_size  # root/target batch size — drives the pass length
 
         # root's direct children are the bound sources (parity with the previous loader: depth-1 sources)
-        self._child_binds: list[Bind] = [b for b in scheme.binds if b.parent == self.s.root]
+        self._child_binds: list[Bind] = [b for b in scheme.binds if b.parent == self.scheme.root]
 
-        # per-node stable sub-seed from one SeedSequence, so nodes don't correlate; a pass's seed is
-        # (sub-seed, pass index) → a pass is fully reproducible from its index.
-        self._node_seeds: dict[str, int] = {
-            name: int(seq.generate_state(1)[0])
-            for name, seq in zip(
-                sorted(scheme.nodes), np.random.SeedSequence(scheme.seed).spawn(len(scheme.nodes)), strict=True
-            )
-        }
+        # one independent sub-generator per node (spawned off a fresh local `default_rng(scheme.seed)`, so
+        # every loader from the same seed gets the same set), so nodes don't correlate. These stay pristine —
+        # samplers `deepcopy` them rather than advance them in place, so a node's oracle/target/child samplers
+        # all start from the identical state and stay in lockstep; each pass advances the copies, not these.
+        rng = np.random.default_rng(scheme.seed)
+        self._node_rngs: dict[str, np.random.Generator] = dict(
+            zip(sorted(scheme.nodes), rng.spawn(len(scheme.nodes)), strict=True)
+        )
 
         # Resolve each node's source (materializing a `Node.in_memory` node into RAM, see _io) and build its
         # leaf partition + weights + tuple-labelled categorical (obs only — no cell matrices). `_prepare`
@@ -68,10 +76,18 @@ class Loader(_SchemeReader):
         # A natural epoch over the root (target) node: its cell count // the root's batch_size. The root
         # drives the zip, so every node draws the same number of batches; each node's num_samples ==
         # _n_batches * that node's batch_size (source rows need not equal target rows).
-        n_root_obs = len(self._st[self.s.root]["cats"])
-        self._n_batches = max(1, n_root_obs // self._B)
+        n_root_obs = len(self._st[self.scheme.root]["cats"])
+        self._n_batches = max(1, n_root_obs // self._root_batch_size)
 
-        self._build_samplers_and_loaders()
+        # Per node/key: a ClassSampler (root) or BoundClassSampler (child) + an annbatch Loader. The schedule
+        # oracle is built once; the root loader's sampler and each bound child's inner are deepcopies of it,
+        # so they start from identical state and their per-batch draws agree. All of a node's keys share the
+        # node's rng, so the (identical) samplers select the same rows every batch — a node's reps are aligned.
+        self._oracle_sampler = self._new_class_sampler(self.scheme.root)  # per-batch condition schedule oracle
+        self._loaders: dict[str, dict[str, AnnbatchLoader]] = {}
+        self._add_node_loaders(self.scheme.root, deepcopy(self._oracle_sampler))
+        for b in self._child_binds:
+            self._add_node_loaders(b.child, self._new_bound_sampler(b))
 
         self._iters: dict[str, dict[str, Iterator[dict]]] | None = None
         self._schedule: np.ndarray | None = None  # per-batch root leaf code for the current pass
@@ -83,98 +99,61 @@ class Loader(_SchemeReader):
         Every node feeds a chunked sampler, so each is validated against the shared
         :meth:`_check_in_memory_chunk` rule (``in_memory`` ⇒ ``chunk_size=1``, else raise).
         """
-        resolved = _resolve_config_map(cfg, self.s.nodes, kind="node")
-        for name, node in self.s.nodes.items():
+        resolved = _resolve_config_map(cfg, self.scheme.nodes, kind="node")
+        for name, node in self.scheme.nodes.items():
             self._check_in_memory_chunk(name, resolved[name], node)
         return resolved
 
     # ── build ────────────────────────────────────────────────────────────
     def _new_class_sampler(self, name: str) -> ClassSampler:
-        cfg = self._cfg[name]
         try:  # annbatch enforces its own run-length rule for chunk>1; forward with node context
             return ClassSampler(
-                chunk_size=cfg.chunk_size,
-                preload_nchunks=cfg.preload_nchunks,
-                batch_size=cfg.batch_size,
+                chunk_size=self._cfg[name].chunk_size,
+                preload_nchunks=self._cfg[name].preload_nchunks,
+                batch_size=self._cfg[name].batch_size,
                 classes=self._st[name]["cats"],
-                num_samples=self._n_batches * cfg.batch_size,
+                num_samples=self._n_batches * self._cfg[name].batch_size,
                 class_weights=self._st[name]["w"],
                 drop_last=True,
-                rng=np.random.default_rng(self._node_seeds[name]),
+                rng=deepcopy(self._node_rngs[name]),
             )
         except ValueError as e:
             raise ValueError(f"node {name!r}: {e}") from e
 
     def _new_bound_sampler(self, b: Bind) -> BoundClassSampler:
-        inner = self._new_class_sampler(self.s.root)
-        # Match on the bind's shared columns; the child's leaf weights (0 for excluded leaves, e.g.
-        # perturbed cells in a control node) go in as the *secondary* class so only positive-weight
-        # child leaves are drawn within each matched context — the exclusion `classes_to_bind_on` alone
-        # can't express (it groups all cells sharing the context).
-        return self._make_bound(
-            b,
-            inner,
-            on=_bind_on(self._st[b.parent]["node"], self._st[b.child]["node"], b.common),
-            classes=self._st[b.child]["cats"],
-            class_weights=self._st[b.child]["w"],
-        )
-
-    def _make_bound(
-        self,
-        b: Bind,
-        inner: ClassSampler,
-        *,
-        on: dict[int, int] | None,
-        classes: pd.Categorical | None = None,
-        class_weights: np.ndarray | None = None,
-    ) -> BoundClassSampler:
-        cfg = self._cfg[b.child]
+        # Inner = a copy of the oracle, so the bound draws the same per-batch schedule. Match on the bind's
+        # shared columns; the child's leaf weights (0 for excluded leaves, e.g. perturbed cells in a control
+        # node) go in as the *secondary* ``classes`` so only positive-weight child leaves are drawn within
+        # each matched context — the exclusion `classes_to_bind_on` alone can't express (it groups all cells
+        # sharing the context).
+        cfg, cats = self._cfg[b.child], self._st[b.child]["cats"]
+        parent, child = self._st[b.parent]["node"], self._st[b.child]["node"]
         try:
             return BoundClassSampler(
-                inner,
+                deepcopy(self._oracle_sampler),
                 cfg.chunk_size,
                 cfg.preload_nchunks,
                 cfg.batch_size,
-                classes_to_bind_on=self._st[b.child]["cats"],
-                on=on,
-                classes=classes,
-                class_weights=class_weights,
-                rng=np.random.default_rng(self._node_seeds[b.child]),
+                classes_to_bind_on=cats,
+                # inner (parent) tuple position → bound (child) tuple position, per shared ``common`` column
+                on={parent.cols.index(c): child.cols.index(c) for c in b.common},
+                classes=cats,
+                class_weights=self._st[b.child]["w"],
+                rng=deepcopy(self._node_rngs[b.child]),
             )
         except ValueError as e:
             raise ValueError(f"node {b.child!r}: {e}") from e
 
-    def _build_samplers_and_loaders(self) -> None:
-        """Per node/key: a ClassSampler (root) or BoundClassSampler (child) + annbatch Loader.
-
-        A per-child schedule *oracle* and each bound's inner are root-seeded so their class draws agree
-        with the target's; all of a node's keys share the node seed, so the (identical) samplers select
-        the same rows every batch — every rep of a node is the same cells.
-        """
-        self._oracle = self._new_class_sampler(self.s.root)  # supplies the per-batch condition schedule
-
-        self._loaders: dict[str, dict[str, AnnbatchLoader]] = {}
-        self._add_node_loaders(self.s.root, lambda: self._new_class_sampler(self.s.root))
-        for b in self._child_binds:
-            self._add_node_loaders(b.child, lambda b=b: self._new_bound_sampler(b))
-
-    def _add_node_loaders(self, name: str, make_sampler: Callable[[], ClassSampler | BoundClassSampler]) -> None:
-        node = self._st[name]["node"]
-        self._loaders[name] = _build_loaders(self._nodes[name], node, self._cfg[name], make_sampler)
-
-    # ── per-pass scheduling ────────────────────────────────────────────────
-    def _start_pass(self) -> None:
-        """Draw the schedule and rebuild iterators for a fresh epoch (advancing every sampler's RNG once).
-
-        The oracle's ``batch_codes()`` and each target/child ``iter()`` each consume one class draw, so —
-        all root-referencing samplers having started from the root seed — the oracle, the target reps and
-        every bound child's inner stay in lockstep and draw the *same* per-batch class each pass. The RNG
-        advances across passes (a real epoch stream), so a pickled loader — whose sampler RNG state is
-        kept — resumes the next pass rather than replaying.
-        """
-        self._schedule = self._oracle.batch_codes()
-        self._iters = {name: {key: iter(ld) for key, ld in loaders.items()} for name, loaders in self._loaders.items()}
-        self._pos = 0
+    def _add_node_loaders(self, name: str, sampler: ClassSampler | BoundClassSampler) -> None:
+        # add the same loader to every key of the node;
+        src, node, to = self._nodes[name], self._st[name]["node"], self._cfg[name].to
+        loaders: dict[str, AnnbatchLoader] = {}
+        for key in node.keys:
+            base = AnnbatchLoader(
+                batch_sampler=deepcopy(sampler), return_index=False, to=to, preload_to_gpu=self._preload_to_gpu
+            )
+            loaders[key] = _attach(base, src, key)
+        self._loaders[name] = loaders
 
     # ── pickling ─────────────────────────────────────────────────────────────
     def __getstate__(self) -> dict[str, object]:
@@ -191,7 +170,7 @@ class Loader(_SchemeReader):
 
     def __setstate__(self, state: dict[str, object]) -> None:
         self.__dict__.update(state)
-        self._iters = None  # force `_start_pass` on the next `__next__`, using the restored sampler RNG
+        self._iters = None  # force a fresh pass on the next `__next__`, using the restored sampler RNG
 
     # ── iteration ──────────────────────────────────────────────────────────
     def __iter__(self) -> Loader:
@@ -202,20 +181,27 @@ class Loader(_SchemeReader):
         node = self._st[name]["node"]
         return {key: next(self._iters[name][key])["X"] for key in node.keys}
 
-    def __next__(self) -> dict[str, np.ndarray]:
+    def __next__(self) -> dict[str, dict]:
         if self._iters is None or self._pos >= self._n_batches:
-            self._start_pass()  # first pass, next epoch, or resume after unpickling
+            # Start a fresh pass (first pass, next epoch, or resume after unpickling): draw the schedule and
+            # (re)build one iterator per node/key. The oracle's `batch_codes()` and each `iter()` each consume
+            # one class draw, so — all samplers being deepcopies of the same oracle state — they stay in
+            # lockstep and draw the same per-batch class. RNG advances across passes, so an unpickled loader
+            # resumes the next pass rather than replaying.
+            self._schedule = self._oracle_sampler.batch_codes()
+            self._iters = {
+                name: {key: iter(ld) for key, ld in loaders.items()} for name, loaders in self._loaders.items()
+            }
+            self._pos = 0
         j = self._pos
         self._pos += 1
 
-        st = self._st[self.s.root]
-        node = st["node"]
-        leaf = st["leaves"][int(self._schedule[j])]  # per-batch category — from the schedule oracle
-
-        out: dict = {}
-        self._emit_rep(out, "target", self._nodes_next(self.s.root), node)  # target + aligned target_reps
+        # One entry per streamed node, keyed by node name: the root (``scheme.root``) is the target, each
+        # bound child is a source. Each value is that node's aligned reps ``{rep loc: rows}`` (same cells).
+        out: dict = {self.scheme.root: self._nodes_next(self.scheme.root)}
+        for b in self._child_binds:  # bound child sources, replayed via their BoundClassSamplers
+            out[b.child] = self._nodes_next(b.child)
         if self._condition_lookup is not None:
+            leaf = self._st[self.scheme.root]["leaves"][int(self._schedule[j])]  # per-batch category (root leaf)
             out["condition"] = _condition_from_lookup(self._condition_lookup, leaf)
-        for b in self._child_binds:  # bound child source, replayed via its BoundClassSampler
-            self._emit_rep(out, "source", self._nodes_next(b.child), self._st[b.child]["node"])
         return out

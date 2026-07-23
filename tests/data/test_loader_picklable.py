@@ -29,7 +29,7 @@ def test_pickle_mid_stream_and_resume_deterministic():
 
     # two loaders restored from the same checkpoint must produce identical streams
     la, lb = pickle.loads(blob), pickle.loads(blob)
-    a = [next(la)["target"] for _ in range(4)]
-    b = [next(lb)["target"] for _ in range(4)]
+    a = [next(la)["pert"]["X"] for _ in range(4)]  # target = the root node, keyed by name → rep loc
+    b = [next(lb)["pert"]["X"] for _ in range(4)]
     assert all(np.array_equal(x, y) for x, y in zip(a, b, strict=True))
     assert a[0].shape == (8, 4)
