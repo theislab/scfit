@@ -1,10 +1,10 @@
 r"""Public data spec: the :class:`Stream` consumed by :class:`~scfit.data.Loader`.
 
 Everything is a :class:`Stream` — one streamed population over a source, described by the columns it
-groups on, the representation(s) it reads, its per-group weights, and (for a matched *partner*) the
-columns it shares with the primary. There is no separate node / bind / scheme object: the loader takes
-one primary :class:`Stream` plus any number of named partner :class:`Stream`\\s and wires them into
-annbatch samplers directly.
+groups on, the representation(s) it reads, its per-group weights, an optional per-group array lookup, and
+(for a matched *link*) the columns it shares with the primary. There is no separate node / bind / scheme
+object: the loader takes one primary :class:`Stream` plus any number of named linked :class:`Stream`\\s
+and wires them into annbatch samplers directly.
 
 A Stream partitions its source's cells into **leaves** (unique combinations of ``group_by``) with a
 per-combination :data:`Weights` mapping. A weight of 0 (or a combination absent from the mapping) is
@@ -20,26 +20,6 @@ from typing import TypedDict, Unpack
 
 import anndata as ad
 import numpy as np
-from anndata.acc import RefAcc
-
-# A representation a stream reads. Accepted as a loc string — ``"X"`` | ``"obsm/<k>"`` | ``"varm/<k>"`` |
-# ``"layers/<k>"`` — or the equivalent :mod:`anndata.acc` accessor (``A.X`` | ``A.obsm["<k>"]`` |
-# ``A.layers["<k>"]``). :class:`Stream` normalizes to the loc string, the canonical locator downstream
-# (the batch-dict rep key, and how a rep is read from a source).
-RepKey = str | RefAcc
-
-
-def _rep_loc(key: RepKey) -> str:
-    """Normalize a rep key (loc string or :mod:`anndata.acc` accessor) to a loc string."""
-    if isinstance(key, str):
-        return key
-    dim, k = getattr(key, "dim", None), getattr(key, "k", None)  # anndata.acc accessor
-    if dim in ("obs", "var"):  # MultiAcc → obsm / varm
-        return f"{dim}m/{k}"
-    if k is None:  # LayerAcc with no key → X
-        return "X"
-    return f"layers/{k}"  # LayerAcc with a key → layers/<k>
-
 
 type Container = ad.AnnData | list[ad.AnnData]
 # What a Stream accepts as its source: an in-memory container, or zarr path(s) opened backed (see _io).
@@ -109,7 +89,7 @@ def weight_vector(weights: Weights | None, leaves: Sequence[tuple]) -> np.ndarra
 class Stream:
     r"""One streamed population: a source, its grouping columns, reps, weights, and read parameters.
 
-    The single public unit :class:`~scfit.data.Loader` consumes. A Stream passed in ``partners=`` (with a
+    The single public unit :class:`~scfit.data.Loader` consumes. A Stream passed in ``links=`` (with a
     ``match_on``) is matched batch-for-batch to the primary on the shared ``match_on`` values.
 
     Parameters
@@ -120,14 +100,19 @@ class Stream:
     group_by
         Columns whose unique combinations define the groups sampled (the leaves).
     rep
-        Representation location(s) to stream — a loc string (``"X"`` / ``"obsm/<k>"`` / ``"layers/<k>"``)
-        or :mod:`anndata.acc` accessor, or a tuple of them for several **aligned** reps of the same cells.
+        Representation location(s) to stream — a loc string ``"X"`` / ``"obsm/<k>"`` / ``"layers/<k>"``, or a
+        tuple of them for several **aligned** reps of the same cells.
     weights
         ``{group: weight}`` (a group is a ``group_by`` tuple); a group absent or with weight 0 is excluded.
         :obj:`None` (default) is uniform over every group present.
+    label_lookup
+        Optional ``{label: {realm: array}}`` — per-label side arrays (e.g. a perturbation encoding), where a
+        *label* is a ``group_by`` combination. Each batch surfaces this stream's current label's arrays under
+        ``batch["labels"][<stream name>]``. Every positive-weight label must be present (checked at
+        :class:`~scfit.data.Loader` construction).
     match_on
-        Columns a *partner* stream shares with the primary — set only on a partner, so its group is drawn
-        from the same ``match_on`` values as the primary's group each batch. Empty ⇒ unconditional.
+        Columns a *linked* stream shares with the primary — set only on a link, so its group is drawn from
+        the same ``match_on`` values as the primary's group each batch. Empty ⇒ unconditional.
     in_memory
         Materialize this stream's selected (positive-weight) cells into RAM once, instead of re-reading the
         source each batch (for a small, frequently re-drawn pool such as a matched control).
@@ -142,8 +127,9 @@ class Stream:
         source: Source,
         *,
         group_by: Sequence[str],
-        rep: RepKey | Sequence[RepKey] = "X",
+        rep: str | Sequence[str] = "X",
         weights: Weights | None = None,
+        label_lookup: Mapping[tuple, Mapping[str, np.ndarray]] | None = None,
         match_on: Sequence[str] = (),
         in_memory: bool = False,
         **sampler: Unpack[SamplerKwargs],
@@ -152,27 +138,25 @@ class Stream:
         group_by = tuple(group_by)
         if not group_by:
             raise ValueError("Stream.group_by must be non-empty.")
-        reps = rep if isinstance(rep, tuple | list) else (rep,)
-        rep_locs = tuple(_rep_loc(r) for r in reps)
-        if not rep_locs or any(not r for r in rep_locs):
-            raise ValueError("Stream.rep must be one or more non-empty representation locations.")
+        rep = (rep,) if isinstance(rep, str) else tuple(rep) if isinstance(rep, tuple | list) else ()
+        if not rep or not all(isinstance(r, str) and r for r in rep):
+            raise ValueError('Stream.rep must be one or more non-empty loc strings ("X" / "obsm/<k>" / …).')
         if weights is not None:
             for k in weights:
                 if len(k) != len(group_by):
                     raise ValueError(f"weight key {k!r} arity != group_by {group_by}.")
             if any(w < 0 for w in weights.values()):
                 raise ValueError("Stream.weights must be non-negative.")
+        if label_lookup is not None:
+            for k in label_lookup:
+                if len(k) != len(group_by):
+                    raise ValueError(f"label_lookup key {k!r} arity != group_by {group_by}.")
 
         self.source = source
         self.group_by = group_by
-        self.rep: tuple[str, ...] = rep_locs
+        self.rep: tuple[str, ...] = rep
         self.weights = weights
+        self.label_lookup = label_lookup
         self.match_on = tuple(match_on)
         self.in_memory = in_memory
         self.sampler: dict[str, int] = dict(sampler)  # {} (inherit) or all three (see _check_sampler)
-
-    def __repr__(self) -> str:
-        return (
-            f"Stream(group_by={self.group_by}, rep={self.rep}, match_on={self.match_on}, "
-            f"in_memory={self.in_memory}, weights={'uniform' if self.weights is None else 'custom'})"
-        )

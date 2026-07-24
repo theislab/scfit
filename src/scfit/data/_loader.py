@@ -1,13 +1,13 @@
-"""``Loader`` — streams matched batches from one primary :class:`Stream` plus named partner streams.
+"""``Loader`` — streams matched batches from one primary :class:`Stream` plus named linked streams.
 
 Each pass is a fresh epoch. The primary draws a per-batch class schedule ∝ its weights via an annbatch
-:class:`~annbatch.samplers.ClassSampler`; every partner replays that schedule onto its own cells via a
+:class:`~annbatch.samplers.ClassSampler`; every link replays that schedule onto its own cells via a
 :class:`~annbatch.samplers.BoundClassSampler` — matched by *label* on its ``match_on`` columns (select via
-the partner's weights + project via ``match_on``). A batch is ``{stream name: {rep loc: rows}}`` for the
-primary and every partner, plus ``"annotations"``. Every sampler that must agree within a pass (the
-schedule oracle, the primary's reps, each partner's inner) is a ``deepcopy`` of one seeded oracle, so they
-stay in lockstep, a stream's reps read the same rows, and a pickled loader resumes the same stream.
-See ``README.md``.
+the link's weights + project via ``match_on``). A batch is ``{stream name: {rep loc: rows}}`` for the
+primary and every link, plus ``"labels"`` (the current label's arrays for every stream with a
+``label_lookup``). Every sampler that must agree within a pass (the schedule oracle, the primary's reps,
+each link's inner) is a ``deepcopy`` of one seeded oracle, so they stay in lockstep, a stream's reps read
+the same rows, and a pickled loader resumes the same stream. See ``README.md``.
 """
 
 from __future__ import annotations
@@ -22,30 +22,10 @@ import pandas as pd
 from annbatch import Loader as AnnbatchLoader  # annbatch's low-level per-rep loader (not scfit's `Loader`)
 from annbatch.samplers import BoundClassSampler, ClassSampler
 
-from scfit.data._io import (
-    get_from_container,
-    is_backed_array,
-    leaf_codes,
-    materialize_node,
-    obs_columns,
-    open_source,
-)
-from scfit.data._schema import (
-    _SAMPLER_KEYS,
-    Container,
-    SamplerKwargs,
-    Stream,
-    _check_sampler,
-    weight_vector,
-)
+from scfit.data._io import get_from_container, is_backed_array, leaf_codes, materialize_node, obs_columns, open_source
+from scfit.data._schema import _SAMPLER_KEYS, Container, SamplerKwargs, Stream, _check_sampler, weight_vector
 
-__all__ = ["Annotations", "Loader"]
-
-# Per-stream annotations: ``{stream name: {leaf: {realm: array}}}`` — from a stream's leaf (its ``group_by``
-# combination) to the named arrays for a batch drawn from it (e.g. the perturbation encoding). Keyed by the
-# SAME leaf tuples as the stream's ``weights``. Each batch surfaces ``{stream name: the current leaf's
-# arrays}`` under ``"annotations"`` for every stream given here.
-type Annotations = Mapping[str, Mapping[tuple, Mapping[str, np.ndarray]]]
+__all__ = ["Loader"]
 
 _PRIMARY = "primary"  # reserved name of the root / target stream
 
@@ -60,26 +40,24 @@ class _Read(NamedTuple):
 
 
 class Loader:
-    """Yields ``{stream name: {rep loc: rows}}`` (+ ``"annotations"``) — the primary plus matched partners."""
+    """Yields ``{stream name: {rep loc: rows}}`` (+ ``"labels"``) — the primary plus its matched links."""
 
     def __init__(
         self,
         primary: Stream,
-        partners: Mapping[str, Stream] | None = None,
+        links: Mapping[str, Stream] | None = None,
         *,
         seed: int = 0,
-        annotations: Annotations | None = None,
         to: str | None = "torch",
         preload_to_gpu: bool = False,
         **sampler: Unpack[SamplerKwargs],
     ) -> None:
         _check_sampler(sampler, "Loader")
-        partners = dict(partners or {})
-        if _PRIMARY in partners:
-            raise ValueError(f"partner name {_PRIMARY!r} is reserved for the primary stream.")
-        self._streams: dict[str, Stream] = {_PRIMARY: primary, **partners}
-        self._partners: list[str] = list(partners)
-        self._annotations = annotations
+        links = dict(links or {})
+        if _PRIMARY in links:
+            raise ValueError(f"link name {_PRIMARY!r} is reserved for the primary stream.")
+        self._streams: dict[str, Stream] = {_PRIMARY: primary, **links}
+        self._links: list[str] = list(links)
         self._preload_to_gpu = preload_to_gpu
 
         # Resolve read config per stream: the stream's own sampler kwargs win; else the loader's; else error.
@@ -99,9 +77,9 @@ class Loader:
             self._cfg[name] = cfg
         self._root_batch_size = self._cfg[_PRIMARY].batch_size
 
-        # Each partner is matched to the primary on its ``match_on`` columns (⊆ the columns they share).
+        # Each link is matched to the primary on its ``match_on`` columns (⊆ the columns they share).
         primary_cols = self._streams[_PRIMARY].group_by
-        for name in self._partners:
+        for name in self._links:
             shared = set(primary_cols) & set(self._streams[name].group_by)
             if not set(self._streams[name].match_on) <= shared:
                 raise ValueError(
@@ -115,67 +93,60 @@ class Loader:
             name: open_source(s.source, keys=sorted(s.rep), cols=sorted(s.group_by))
             for name, s in self._streams.items()
         }
-        # (stream name, cols) -> full-obs (codes, leaves): construction-only scratch, emptied on pickle.
-        self._leaf_cache: dict[tuple, tuple[np.ndarray, list[tuple]]] = {}
 
         # One independent sub-generator per stream (spawned off ``default_rng(seed)``); the samplers deepcopy
-        # these rather than advance them, so a stream's oracle/target/partner samplers all start from the
-        # identical state and stay in lockstep, and the whole stream is reproducible from the seed.
+        # these rather than advance them, so a stream's oracle/target/link samplers all start from the identical
+        # state and stay in lockstep, and the whole stream is reproducible from the seed.
         rng = np.random.default_rng(seed)
         self._rngs: dict[str, np.random.Generator] = dict(
             zip(sorted(self._streams), rng.spawn(len(self._streams)), strict=True)
         )
 
         # Per stream: resolve source (materializing an in_memory stream into RAM) + build its tuple-labelled
-        # categorical / weight vector / leaf list (obs only — no cell matrices). Streams over the same
-        # (source, cols) share one factorization via ``_factorize``, so a big obs is never factorized twice.
+        # categorical / weight vector / leaf list (obs only — no cell matrices).
         self._resolved: dict[str, Container] = {}
         self._st: dict[str, dict] = {}
         for name, s in self._streams.items():
             src, cats, w, leaves = self._prepare(name, s)
             self._resolved[name] = src
             self._st[name] = {"leaves": leaves, "w": w, "cats": cats}
-        self._validate_annotations()  # strict: every named stream's positive-weight leaves must be covered
+        self._validate_label_lookups()  # strict: a stream's label_lookup must cover its positive-weight leaves
 
         # A natural epoch over the primary: its cell count // the primary's batch_size. The primary drives the
         # zip, so every stream draws the same number of batches (its own batch_size ⇒ its own row count).
         n_root_obs = len(self._st[_PRIMARY]["cats"])
         self._n_batches = max(1, n_root_obs // self._root_batch_size)
 
-        # Oracle template: deepcopied into the primary's loader and each partner's inner, so their per-batch
-        # class draws agree. All of a stream's reps share the stream's rng, so the (identical) samplers select
-        # the same rows every batch — a stream's reps are aligned (same cells).
+        # Oracle template: deepcopied into the primary's loader and each link's inner, so their per-batch class
+        # draws agree. All of a stream's reps share the stream's rng, so the (identical) samplers select the
+        # same rows every batch — a stream's reps are aligned (same cells).
         self._oracle_sampler = self._new_class_sampler(_PRIMARY)
         self._loaders: dict[str, dict[str, AnnbatchLoader]] = {}
         self._add_stream_loaders(_PRIMARY, deepcopy(self._oracle_sampler))
-        for name in self._partners:
-            self._add_stream_loaders(name, self._new_bound_sampler(name))
+        for name in self._links:
+            # match_on set → bound to the primary's per-batch class; match_on=() → an independent
+            # (unconditional) draw from the link's own weights.
+            sampler = self._new_bound_sampler(name) if self._streams[name].match_on else self._new_class_sampler(name)
+            self._add_stream_loaders(name, sampler)
 
         self._iters: dict[str, dict[str, Iterator[dict]]] | None = None
         self._pos = 0
 
-    # ── source access ──────────────────────────────────────────────────────
-    def _factorize(self, name: str, cols: tuple[str, ...]) -> tuple[np.ndarray, list[tuple]]:
-        """The stream source's ``(codes, leaves)`` over ``cols`` — read + factorized once, cached by (stream, cols)."""
-        ck = (name, cols)
-        if ck not in self._leaf_cache:
-            self._leaf_cache[ck] = leaf_codes(obs_columns(self._sources[name], cols), cols)
-        return self._leaf_cache[ck]
-
+    # ── build ────────────────────────────────────────────────────────────
     def _prepare(self, name: str, s: Stream) -> tuple[Container, pd.Categorical, np.ndarray, list[tuple]]:
         """A stream's resolved source + its categorical, weight vector and leaf list (obs only).
 
-        An ``in_memory`` stream is materialized into RAM here (positive-weight rows only), reusing the cached
-        source factorization; a non-materialized stream reads straight from the resolved source.
+        An ``in_memory`` stream is materialized into RAM here (positive-weight rows only), reusing the source
+        factorization; a non-materialized stream reads straight from the resolved source. The tuple-labelled
+        categorical is what lets a link match the primary by ``match_on`` (annbatch projects the label).
         """
-        codes, leaves = self._factorize(name, s.group_by)
+        src = self._sources[name]
+        codes, leaves = leaf_codes(obs_columns(src, s.group_by), s.group_by)
         if s.in_memory:
-            src, codes, leaves = materialize_node(self._sources[name], s, (codes, leaves))
-        else:
-            src = self._sources[name]
-        return src, _flat_categorical(codes, leaves), weight_vector(s.weights, leaves), leaves
+            src, codes, leaves = materialize_node(src, s, (codes, leaves))
+        cats = pd.Categorical.from_codes(codes, pd.MultiIndex.from_tuples(leaves).to_flat_index())
+        return src, cats, weight_vector(s.weights, leaves), leaves
 
-    # ── build ────────────────────────────────────────────────────────────
     def _new_class_sampler(self, name: str) -> ClassSampler:
         cfg = self._cfg[name]
         try:  # annbatch enforces its own run-length rule for chunk>1; forward with stream context
@@ -193,11 +164,11 @@ class Loader:
             raise ValueError(f"stream {name!r}: {e}") from e
 
     def _new_bound_sampler(self, name: str) -> BoundClassSampler:
-        # Inner = a copy of the oracle, so the partner draws the same per-batch schedule. Match on the shared
-        # ``match_on`` columns; the partner's leaf weights (0 for excluded leaves) go in as the *secondary*
-        # ``classes`` so only positive-weight partner leaves are drawn within each matched context.
+        # Inner = a copy of the oracle, so the link draws the same per-batch schedule. Match on the shared
+        # ``match_on`` columns; the link's leaf weights (0 for excluded leaves) go in as the *secondary*
+        # ``classes`` so only positive-weight link leaves are drawn within each matched context.
         cfg, cats = self._cfg[name], self._st[name]["cats"]
-        primary, partner = self._streams[_PRIMARY], self._streams[name]
+        primary, link = self._streams[_PRIMARY], self._streams[name]
         try:
             return BoundClassSampler(
                 deepcopy(self._oracle_sampler),
@@ -205,8 +176,8 @@ class Loader:
                 cfg.preload_nchunks,
                 cfg.batch_size,
                 classes_to_bind_on=cats,
-                # primary tuple position → partner tuple position, per shared ``match_on`` column
-                on={primary.group_by.index(c): partner.group_by.index(c) for c in partner.match_on},
+                # primary tuple position → link tuple position, per shared ``match_on`` column
+                on={primary.group_by.index(c): link.group_by.index(c) for c in link.match_on},
                 classes=cats,
                 class_weights=self._st[name]["w"],
                 rng=deepcopy(self._rngs[name]),
@@ -231,29 +202,25 @@ class Loader:
             )
         self._loaders[name] = loaders
 
-    def _validate_annotations(self) -> None:
-        """Strict coverage: every named stream's positive-weight leaf must have an annotation (no silent gaps)."""
-        if self._annotations is None:
-            return
-        for name, stream_ann in self._annotations.items():
-            if name not in self._st:
-                raise ValueError(f"annotations reference unknown stream {name!r}; streams are {sorted(self._st)}.")
+    def _validate_label_lookups(self) -> None:
+        """Strict coverage: a stream's ``label_lookup`` must cover its positive-weight leaves (no silent gaps)."""
+        for name, s in self._streams.items():
+            if s.label_lookup is None:
+                continue
             leaves, weights = self._st[name]["leaves"], self._st[name]["w"]
-            missing = [lf for lf, w in zip(leaves, weights, strict=True) if w > 0 and lf not in stream_ann]
+            missing = [lf for lf, w in zip(leaves, weights, strict=True) if w > 0 and lf not in s.label_lookup]
             if missing:
-                raise ValueError(f"annotations for stream {name!r} miss positive-weight leaves {missing}.")
+                raise ValueError(f"stream {name!r}: label_lookup misses positive-weight leaves {missing}.")
 
     # ── pickling ─────────────────────────────────────────────────────────────
     def __getstate__(self) -> dict[str, object]:
         """Pickle without the live annbatch iterators (generators aren't picklable).
 
         Every sampler's RNG state is kept, so a reloaded loader resumes the same reproducible stream (the
-        next pass) on the next ``__next__``; ``_iters`` is dropped and rebuilt, and the construction-only
-        ``_leaf_cache`` is emptied (its codes are already carried by each stream's categorical).
+        next pass) on the next ``__next__``; ``_iters`` is dropped and rebuilt from the restored samplers.
         """
         state = self.__dict__.copy()
         state["_iters"] = None
-        state["_leaf_cache"] = {}
         return state
 
     def __setstate__(self, state: dict[str, object]) -> None:
@@ -265,19 +232,19 @@ class Loader:
         return self
 
     def _stream_next(self, name: str) -> tuple[dict, object]:
-        """A stream's aligned reps ``{rep loc: rows}`` plus its per-batch ``comb`` (category label).
+        """A stream's aligned reps ``{rep loc: rows}`` plus its per-batch ``label`` (category label).
 
-        Identical samplers pick the same aligned rows for every rep, and share one ``comb`` per batch.
+        Identical samplers pick the same aligned rows for every rep, and share one ``label`` per batch.
         """
-        reps, comb = {}, None
+        reps, label = {}, None
         for loc in self._streams[name].rep:
             batch = next(self._iters[name][loc])
-            reps[loc], comb = batch["X"], batch["comb"]
-        return reps, comb
+            reps[loc], label = batch["X"], batch["label"]
+        return reps, label
 
-    def _leaf_of(self, name: str, comb: object) -> tuple:
-        """The stream's own leaf for this batch: the primary's ``comb`` as-is; a partner's is ``comb`` past ``match_on``."""
-        leaf = tuple(comb)
+    def _leaf_of(self, name: str, label: object) -> tuple:
+        """The stream's own leaf: the primary's ``label`` as-is; a link's is ``label`` past ``match_on``."""
+        leaf = tuple(label)
         return leaf if name == _PRIMARY else leaf[len(self._streams[name].match_on) :]
 
     def __next__(self) -> dict[str, dict]:
@@ -290,25 +257,17 @@ class Loader:
             self._pos = 0
         self._pos += 1
 
-        # One entry per streamed stream, keyed by name: the primary is the target, each partner a source.
+        # One entry per streamed stream, keyed by name: the primary is the target, each link a source.
         out: dict = {}
-        combs: dict = {}
-        for name in (_PRIMARY, *self._partners):
-            out[name], combs[name] = self._stream_next(name)
-        if self._annotations is not None:
-            # per named stream, look up its current leaf (from its `comb`) — strict coverage was checked at
-            # construction, so every drawn leaf is present.
-            out["annotations"] = {
-                name: stream_ann[self._leaf_of(name, combs[name])] for name, stream_ann in self._annotations.items()
-            }
+        label_of: dict = {}
+        for name in (_PRIMARY, *self._links):
+            out[name], label_of[name] = self._stream_next(name)
+        # per stream with a label_lookup, surface its current label's arrays (strict coverage checked at build).
+        labels = {
+            name: s.label_lookup[self._leaf_of(name, label_of[name])]
+            for name, s in self._streams.items()
+            if s.label_lookup is not None
+        }
+        if labels:
+            out["labels"] = labels
         return out
-
-
-def _flat_categorical(codes: np.ndarray, leaves: list[tuple]) -> pd.Categorical:
-    """A tuple-labelled categorical: per-cell leaf code over ``leaves`` (categories are the leaf tuples).
-
-    Tuple labels (not opaque integer codes) let :class:`~annbatch.samplers.BoundClassSampler` match a
-    partner to the primary by the ``match_on`` columns — it projects the label by position.
-    """
-    categories = pd.MultiIndex.from_tuples(leaves).to_flat_index()
-    return pd.Categorical.from_codes(codes, categories=categories)
