@@ -12,6 +12,7 @@ the same rows, and a pickled loader resumes the same stream. See ``README.md``.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from typing import NamedTuple, Unpack
@@ -87,12 +88,9 @@ class Loader:
                     f"with the primary ({sorted(shared)})."
                 )
 
-        # Resolve each stream's source (opening a path backed, reading only the reps + cols it uses). Streams
-        # are uniquely named, so each keeps its own resolved source and factorization — no cross-stream de-dup.
-        self._sources: dict[str, Container] = {
-            name: open_source(s.source, keys=sorted(s.rep), cols=sorted(s.group_by))
-            for name, s in self._streams.items()
-        }
+        # Resolve each stream's source, reading only the reps + cols it uses. Streams naming the same zarr
+        # PATH share one opened (backed) source — its obs is read once (see :meth:`_resolve_sources`).
+        self._sources: dict[str, Container] = self._resolve_sources()
 
         # One independent sub-generator per stream (spawned off ``default_rng(seed)``); the samplers deepcopy
         # these rather than advance them, so a stream's oracle/target/link samplers all start from the identical
@@ -104,9 +102,10 @@ class Loader:
 
         # Per stream: resolve source (materializing an in_memory stream into RAM) + build its tuple-labelled
         # categorical / weight vector / leaf list (obs only — no cell matrices).
-        # (id(source), cols) -> the source's full-obs (codes, leaves): streams sharing a source object (e.g. a
-        # primary and its matched control over the same AnnData) factorize its obs ONCE. Construction-only
-        # scratch, emptied on pickle (each stream's categorical already carries its own codes).
+        # (source path, cols) -> the source's full-obs (codes, leaves): streams naming the same zarr PATH
+        # factorize its obs ONCE (a primary and its matched control over the same file). An already-in-memory
+        # AnnData source has no path, so it is not deduped — not supported. Construction-only scratch, emptied
+        # on pickle (each stream's categorical already carries its own codes).
         self._leaf_cache: dict[tuple, tuple[np.ndarray, list[tuple]]] = {}
         self._resolved: dict[str, Container] = {}
         self._st: dict[str, dict] = {}
@@ -137,20 +136,47 @@ class Loader:
         self._pos = 0
 
     # ── build ────────────────────────────────────────────────────────────
+    def _resolve_sources(self) -> dict[str, Container]:
+        """Open each stream's source, reading only the reps + cols it needs.
+
+        Streams naming the same zarr PATH share one opened (backed) source — its obs is read from disk
+        once — resolved with the *union* of the reps and cols across those streams. A source given as an
+        already-in-memory AnnData (or a list) has no path, so it is resolved per stream (not deduped).
+        """
+        reps: dict[str, set] = {}
+        cols: dict[str, set] = {}
+        for s in self._streams.values():
+            if isinstance(s.source, str | os.PathLike):
+                p = os.fspath(s.source)
+                reps.setdefault(p, set()).update(s.rep)
+                cols.setdefault(p, set()).update(s.group_by)
+        by_path = {p: open_source(p, keys=sorted(reps[p]), cols=sorted(cols[p])) for p in reps}
+        return {
+            name: by_path[os.fspath(s.source)]
+            if isinstance(s.source, str | os.PathLike)
+            else open_source(s.source, keys=sorted(s.rep), cols=sorted(s.group_by))
+            for name, s in self._streams.items()
+        }
+
     def _prepare(self, name: str, s: Stream) -> tuple[Container, pd.Categorical, np.ndarray, list[tuple]]:
         """A stream's resolved source + its categorical, weight vector and leaf list (obs only).
 
-        The source's ``(codes, leaves)`` are factorized once per ``(source object, group_by)`` and cached, so
-        streams sharing a source (a primary and its matched control over the same AnnData) factorize its obs
-        only once. An ``in_memory`` stream is then materialized into RAM (positive-weight rows only), reusing
-        that factorization; others read straight from the resolved source. The tuple-labelled categorical is
-        what lets a link match the primary by ``match_on`` (annbatch projects the label).
+        The obs is factorized once per ``(source path, group_by)`` and cached, so streams naming the same
+        zarr path (a primary and its matched control over one file) factorize it only once. A source given as
+        an already-in-memory AnnData has no path, so it is not deduped — its obs is in RAM and cheap to redo.
+        An ``in_memory`` stream is then materialized into RAM (positive-weight rows only), reusing that
+        factorization; others read straight from the resolved source. The tuple-labelled categorical is what
+        lets a link match the primary by ``match_on`` (annbatch projects the label).
         """
         src = self._sources[name]
-        ck = (id(src), s.group_by)
-        if ck not in self._leaf_cache:
-            self._leaf_cache[ck] = leaf_codes(obs_columns(src, s.group_by), s.group_by)
-        codes, leaves = self._leaf_cache[ck]
+        path = os.fspath(s.source) if isinstance(s.source, str | os.PathLike) else None
+        ck = (path, s.group_by)
+        if path is not None and ck in self._leaf_cache:
+            codes, leaves = self._leaf_cache[ck]
+        else:
+            codes, leaves = leaf_codes(obs_columns(src, s.group_by), s.group_by)
+            if path is not None:
+                self._leaf_cache[ck] = (codes, leaves)
         if s.in_memory:
             src, codes, leaves = materialize_node(src, s, (codes, leaves))
         cats = pd.Categorical.from_codes(codes, pd.MultiIndex.from_tuples(leaves).to_flat_index())
