@@ -1,32 +1,31 @@
-r"""Declarative schema for :class:`~binded.Loader`.
+r"""Public data spec: the :class:`Stream` consumed by :class:`~scfit.data.Loader`.
 
-A :class:`Scheme` is a root :class:`Node` (the target) plus its direct children over named cell
-*sources* — a depth-1 star, pure structure (sources, grouping columns, weights, binds). How each node
-is *read* (chunk / preload / batch sizes)
-lives in a separate :class:`SamplerConfig` passed to the loader, deliberately kept off the ``Node`` so
-the same structure can be run with different sampler settings.
+Everything is a :class:`Stream` — one streamed population over a source, described by the columns it
+groups on, the representation(s) it reads, its per-group weights, and (for a matched *partner*) the
+columns it shares with the primary. There is no separate node / bind / scheme object: the loader takes
+one primary :class:`Stream` plus any number of named partner :class:`Stream`\\s and wires them into
+annbatch samplers directly.
 
-Each node partitions its source's cells into **leaves** (unique combinations of ``cols``) with a
+A Stream partitions its source's cells into **leaves** (unique combinations of ``group_by``) with a
 per-combination :data:`Weights` mapping. A weight of 0 (or a combination absent from the mapping) is
-*excluded* — that IS the selection, native to annbatch's ``ClassSampler``. :class:`Bind` links the
-root to a child on shared columns, so the child is sampled *conditioned* on the root's values.
-See ``README.md`` for the model and the cellflow / sc-flow-tools mapping.
+*excluded* — that IS the selection, native to annbatch's ``ClassSampler``. ``weights=None`` is uniform
+over every group. See ``README.md`` for the model and the cellflow / sc-flow-tools mapping.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
 from os import PathLike
+from typing import TypedDict, Unpack
 
 import anndata as ad
 import numpy as np
 from anndata.acc import RefAcc
 
-# A representation a node streams. Accepted as a loc string — ``"X"`` | ``"obsm/<k>"`` | ``"varm/<k>"`` |
-# ``"layers/<k>"`` — or as the equivalent :mod:`anndata.acc` accessor (``A.X`` | ``A.obsm["<k>"]`` |
-# ``A.layers["<k>"]``). :meth:`Node.__post_init__` normalizes to the loc string, the canonical locator
-# everywhere downstream (the batch-dict rep key, and how reps are read from a source).
+# A representation a stream reads. Accepted as a loc string — ``"X"`` | ``"obsm/<k>"`` | ``"varm/<k>"`` |
+# ``"layers/<k>"`` — or the equivalent :mod:`anndata.acc` accessor (``A.X`` | ``A.obsm["<k>"]`` |
+# ``A.layers["<k>"]``). :class:`Stream` normalizes to the loc string, the canonical locator downstream
+# (the batch-dict rep key, and how a rep is read from a source).
 RepKey = str | RefAcc
 
 
@@ -43,278 +42,137 @@ def _rep_loc(key: RepKey) -> str:
 
 
 type Container = ad.AnnData | list[ad.AnnData]
+# What a Stream accepts as its source: an in-memory container, or zarr path(s) opened backed (see _io).
+type Source = Container | str | PathLike | Sequence[str | PathLike]
 
-# A sampling scheme is just a mapping {combination -> weight}. A combination absent from the mapping
-# (or with weight 0) is excluded — that IS the selection. ``uniform`` / ``frequency`` /
-# ``inverse_frequency`` are plain helpers that build such a dict; nothing about them is privileged.
+# The selection: a mapping {group -> weight} (a group is a ``group_by`` tuple). A group absent / weight 0
+# is excluded — that IS the selection. ``None`` means uniform over every group.
 Weights = Mapping[tuple, float]
 
-__all__ = [
-    "Bind",
-    "Container",
-    "Node",
-    "SamplerConfig",
-    "Scheme",
-    "Weights",
-]
+__all__ = ["Container", "SamplerKwargs", "Source", "Stream", "Weights", "weight_vector"]
+
+# The annbatch read parameters, defined once (via ``Unpack[SamplerKwargs]``) for both Stream and Loader.
+_SAMPLER_KEYS = ("batch_size", "chunk_size", "preload_nchunks")
 
 
-def weight_vector(weights: Weights, leaves: Sequence[tuple]) -> np.ndarray:
-    """Resolve ``{combo: weight}`` to normalized per-leaf weights (→ ``ClassSampler.class_weights``)."""
-    v = np.array([float(weights.get(tuple(lf), 0.0)) for lf in leaves], dtype=float)
+class SamplerKwargs(TypedDict, total=False):
+    """The annbatch read parameters, shared by :class:`Stream` and :class:`~scfit.data.Loader`.
+
+    ``total=False`` so a caller may pass none (inherit from the other level) or all three; a *partial*
+    set is rejected at runtime by :func:`_check_sampler` (all-or-nothing).
+
+    Parameters
+    ----------
+    batch_size
+        Rows per emitted batch for this stream (source and target row counts need not match).
+    chunk_size
+        annbatch read-slice size. ``1`` ⇒ per-row reads (any layout); ``>1`` ⇒ contiguous chunked reads
+        (each sampled leaf must sit in a contiguous run ≥ ``chunk_size``). Must divide ``batch_size``.
+    preload_nchunks
+        Chunks per annbatch read window; a positive multiple of ``batch_size // chunk_size``.
+    """
+
+    batch_size: int
+    chunk_size: int
+    preload_nchunks: int
+
+
+def _check_sampler(sampler: Mapping[str, int], where: str) -> None:
+    """Validate collected sampler kwargs: known keys only, and all-or-nothing (partial → error)."""
+    extra = [k for k in sampler if k not in _SAMPLER_KEYS]
+    if extra:
+        raise TypeError(f"{where}: unexpected keyword(s) {extra}; sampler kwargs are {list(_SAMPLER_KEYS)}.")
+    given = [k for k in _SAMPLER_KEYS if k in sampler]
+    if given and len(given) != len(_SAMPLER_KEYS):
+        missing = [k for k in _SAMPLER_KEYS if k not in sampler]
+        raise ValueError(
+            f"{where}: sampler kwargs are all-or-nothing — got {given} but missing {missing} "
+            f"(set all of {list(_SAMPLER_KEYS)}, or none to inherit)."
+        )
+
+
+def weight_vector(weights: Weights | None, leaves: Sequence[tuple]) -> np.ndarray:
+    """Resolve ``{group: weight}`` to normalized per-leaf weights (→ ``ClassSampler.class_weights``).
+
+    ``weights=None`` means *uniform* over every leaf (the default: each group equally likely).
+    """
+    if weights is None:
+        v = np.ones(len(leaves), dtype=float)
+    else:
+        v = np.array([float(weights.get(tuple(lf), 0.0)) for lf in leaves], dtype=float)
     s = v.sum()
     if s <= 0:
         raise ValueError("weights resolve to all-zero over these leaves — nothing to sample.")
     return v / s
 
 
-@dataclass(frozen=True)
-class Node:
-    """A partition of one source's cells into leaves, with a per-leaf sampling weight.
+class Stream:
+    r"""One streamed population: a source, its grouping columns, reps, weights, and read parameters.
+
+    The single public unit :class:`~scfit.data.Loader` consumes. A Stream passed in ``partners=`` (with a
+    ``match_on``) is matched batch-for-batch to the primary on the shared ``match_on`` values.
 
     Parameters
     ----------
     source
-        Key into :attr:`Scheme.sources`.
-    cols
-        Grouping levels → leaves are the unique combinations of these columns (over ALL the source's
-        cells). These are the grouping/condition columns (cellflow's ``split_covariates`` +
-        ``perturbation_covariates`` columns; sc-flow-tools' grouping keys).
-    keys
-        Representation location(s) to stream, each a loc string — ``"X"`` | ``"obsm/<k>"`` |
-        ``"layers/<k>"`` (cellflow's ``sample_rep``) — or the equivalent :mod:`anndata.acc` accessor
-        describing the same spot (``A.X`` | ``A.obsm["<k>"]`` | ``A.layers["<k>"]``); accessors are
-        normalized to the loc string. A single key streams one rep; a tuple streams SEVERAL **aligned**
-        reps of the *same* sampled cells — e.g. the state plus a per-cell continuous condition. The
-        first key drives sampling (via annbatch's ``ClassSampler``); the rest are read back for the
-        exact same rows, so every rep of a batch is the same cells.
+        An in-memory ``AnnData``, a zarr path, or a list of either — the cells this stream samples. A path
+        is opened backed, reading only the reps + columns this stream uses (see :func:`~binded._io.open_source`).
+    group_by
+        Columns whose unique combinations define the groups sampled (the leaves).
+    rep
+        Representation location(s) to stream — a loc string (``"X"`` / ``"obsm/<k>"`` / ``"layers/<k>"``)
+        or :mod:`anndata.acc` accessor, or a tuple of them for several **aligned** reps of the same cells.
     weights
-        ``{combo: weight}``; a combination absent or with weight 0 is excluded (= the selection).
+        ``{group: weight}`` (a group is a ``group_by`` tuple); a group absent or with weight 0 is excluded.
+        :obj:`None` (default) is uniform over every group present.
+    match_on
+        Columns a *partner* stream shares with the primary — set only on a partner, so its group is drawn
+        from the same ``match_on`` values as the primary's group each batch. Empty ⇒ unconditional.
     in_memory
-        If :obj:`True`, the loader materializes this node's selected (positive-weight) cells into an
-        in-memory ``AnnData`` once and streams them from RAM instead of re-reading the source every batch
-        (see :func:`~binded._io.materialize_node`). Use for a small, frequently re-drawn population
-        (e.g. matched controls). Requires those cells to fit in host RAM.
+        Materialize this stream's selected (positive-weight) cells into RAM once, instead of re-reading the
+        source each batch (for a small, frequently re-drawn pool such as a matched control).
+    **sampler
+        The read parameters :class:`SamplerKwargs` — ``batch_size`` / ``chunk_size`` / ``preload_nchunks``.
+        All-or-nothing: pass all three to set them on this stream, or none to inherit the
+        :class:`~scfit.data.Loader`'s.
     """
 
-    source: str
-    cols: tuple[str, ...]
-    keys: RepKey | Sequence[RepKey] = "X"  # one rep (loc str / accessor), or several aligned reps
-    weights: Weights = field(default_factory=dict)
-    # TODO: maybe this shouldn't be here
-    in_memory: bool = False  # materialize this node's selected cells into RAM (see binded._io)
+    def __init__(
+        self,
+        source: Source,
+        *,
+        group_by: Sequence[str],
+        rep: RepKey | Sequence[RepKey] = "X",
+        weights: Weights | None = None,
+        match_on: Sequence[str] = (),
+        in_memory: bool = False,
+        **sampler: Unpack[SamplerKwargs],
+    ) -> None:
+        _check_sampler(sampler, "Stream")
+        group_by = tuple(group_by)
+        if not group_by:
+            raise ValueError("Stream.group_by must be non-empty.")
+        reps = rep if isinstance(rep, tuple | list) else (rep,)
+        rep_locs = tuple(_rep_loc(r) for r in reps)
+        if not rep_locs or any(not r for r in rep_locs):
+            raise ValueError("Stream.rep must be one or more non-empty representation locations.")
+        if weights is not None:
+            for k in weights:
+                if len(k) != len(group_by):
+                    raise ValueError(f"weight key {k!r} arity != group_by {group_by}.")
+            if any(w < 0 for w in weights.values()):
+                raise ValueError("Stream.weights must be non-negative.")
 
-    def __post_init__(self) -> None:  # structural checks (data-free)
-        keys = self.keys if isinstance(self.keys, tuple | list) else (self.keys,)  # str/accessor → single
-        object.__setattr__(self, "keys", tuple(_rep_loc(k) for k in keys))  # normalize accessors → loc strings
-        if not self.keys or any(not k for k in self.keys):
-            raise ValueError("Node.keys must be one or more non-empty representation locations.")
-        if len(self.cols) == 0:
-            raise ValueError("Node.cols must be non-empty.")
-        for k in self.weights:
-            if len(k) != len(self.cols):
-                raise ValueError(f"weight key {k!r} arity != cols {self.cols}.")
-        if any(w < 0 for w in self.weights.values()):
-            raise ValueError("weights must be non-negative.")
+        self.source = source
+        self.group_by = group_by
+        self.rep: tuple[str, ...] = rep_locs
+        self.weights = weights
+        self.match_on = tuple(match_on)
+        self.in_memory = in_memory
+        self.sampler: dict[str, int] = dict(sampler)  # {} (inherit) or all three (see _check_sampler)
 
-
-@dataclass(frozen=True)
-class Bind:
-    """Condition ``child`` on ``parent``: match on the ``common`` columns (⊆ their shared cols).
-
-    Each batch, the child's sampled leaf is derived from the parent's leaf via the ``common`` values
-    (parent leaf → shared-column values → matching child leaf). This is the source↔target matching:
-    with ``common`` = the context (e.g. cell line), the child (control) is drawn from the *same*
-    context as the parent (perturbed) — cellflow's "control = same group", sc-flow-tools'
-    ``control_values_dict`` + default same-context coupling.
-
-    Conditioning is **required**: if a parent value has no matching positive-weight child leaf the
-    loader raises (no silent fallback). When several child leaves share the bound value — the child
-    partitions on columns beyond ``common`` (e.g. child cols ``(a, x)`` bound on ``a``) — one is drawn
-    ∝ the child's leaf weights, so ``P(child extra cols | common)`` is weight-controlled. Pass
-    ``common=()`` to opt into unconditional child sampling explicitly.
-
-    Matching is thus *select* (the child's per-leaf weights) + *project* (``common``) — nothing more is
-    needed. An arbitrary parent-leaf → child-leaf pairing (sc-flow-tools' ``matched_keys``) is not a
-    separate mechanism: because it is a function, tag each side with a shared key column (parent cells
-    with the child leaf they map to, child cells with their own leaf) and bind on that column.
-    """
-
-    parent: str
-    child: str
-    common: tuple[str, ...] = ()  # ⊆ parent.cols ∩ child.cols; () ⇒ unconditional
-
-
-@dataclass(frozen=True, kw_only=True)
-class SamplerConfig:
-    r"""annbatch read parameters for a node's sampler — kept separate from the structural :class:`Node`.
-
-    Passed to :class:`~binded.Loader` as either one config (applied to every node)
-    or a ``{node_name: SamplerConfig}`` mapping (per-node). Nodes may use **different** ``batch_size``\\s:
-    every node draws the same number of batches (the root's, derived from its cell count), but a node's
-    batch carries its own row count — so source and target row counts need not match.
-
-    Parameters
-    ----------
-    batch_size
-        Rows per emitted batch for this node (target rows for the root; source rows for a bound child).
-    chunk_size
-        annbatch read-slice size. **Required** and explicit — there is no hidden default; set it
-        deliberately. ``1`` ⇒ per-row reads (any on-disk layout); ``>1`` ⇒ contiguous chunked reads
-        (higher throughput on disk), assuming each sampled leaf sits in a contiguous run ≥
-        ``chunk_size``. Must divide ``batch_size`` (one category per batch).
-    preload_nchunks
-        Chunks per annbatch read window. **Required** and explicit — there is no hidden default; set it
-        deliberately (e.g. ``batch_size // chunk_size`` for one batch per window). Must be a positive
-        multiple of ``batch_size // chunk_size``.
-    to
-        annbatch ``Loader`` output backend for the yielded batches — ``"torch"`` (default), ``"jax"``, or
-        :obj:`None` (annbatch's own default). Forwarded verbatim to :class:`annbatch.Loader`.
-
-    (``preload_to_gpu`` is not here — it is one global :class:`~scfit.data.Loader` argument, not per-node.)
-    """
-
-    batch_size: int
-    chunk_size: int
-    preload_nchunks: int
-    to: str = "torch"
-
-
-def _resolve_config_map(
-    config: SamplerConfig | Mapping[str, SamplerConfig],
-    keys: Sequence[str],
-    *,
-    kind: str,
-) -> dict[str, SamplerConfig]:
-    """Normalize a config spec into exactly one :class:`SamplerConfig` per key.
-
-    ``config`` is either a single :class:`SamplerConfig` (applied to every key) or a
-    ``{key: SamplerConfig}`` mapping — in which case **every** key must be present, with no unknown keys
-    and every value a :class:`SamplerConfig`. ``kind`` names the key in error messages (``"node"`` for
-    :class:`~binded.Loader`, ``"split"`` for :func:`~binded.resolve_split_configs`).
-    """
-    names = list(keys)
-    if not names:
-        raise ValueError(f"{kind}s must be non-empty.")
-    if isinstance(config, SamplerConfig):  # one config → every key
-        return dict.fromkeys(names, config)
-    if isinstance(config, Mapping):  # per-key mapping: every key specified, no extras, all SamplerConfig
-        missing = [n for n in names if n not in config]
-        if missing:
-            raise ValueError(
-                f"sampler_config is per-{kind} but is missing config(s) for {kind}(s) {missing}; "
-                f"specify all of {names}."
-            )
-        extra = [k for k in config if k not in names]
-        if extra:
-            raise ValueError(f"sampler_config has config(s) for unknown {kind}(s) {extra}; {kind}s are {names}.")
-        bad = [k for k, v in config.items() if not isinstance(v, SamplerConfig)]
-        if bad:
-            raise ValueError(
-                f"sampler_config values must be SamplerConfig instances; got a non-SamplerConfig for {bad}."
-            )
-        return {name: config[name] for name in names}
-    raise ValueError(
-        f"sampler_config must be a SamplerConfig or a {{{kind}: SamplerConfig}} mapping; got {type(config).__name__}."
-    )
-
-
-@dataclass(frozen=True)
-class Scheme:
-    """The structural sampling spec: sources, a root node plus its direct children, and the reproducibility cadence.
-
-    Read parameters (chunk / preload / batch sizes) are NOT here — they are a separate
-    :class:`SamplerConfig` given to the loader.
-
-    Parameters
-    ----------
-    sources
-        ``{name: AnnData | list[AnnData]}`` — the cell sources the nodes reference.
-    nodes
-        ``{name: Node}``. Exactly one is the ``root`` (the streamed target); the rest are bound
-        children (sources/controls) via ``binds``.
-    root
-        Name of the root node (must have no parent).
-    seed
-        Reproducibility seed. The loader builds a local ``np.random.default_rng(seed)`` and spawns one
-        independent sub-stream per node, so nodes do not correlate and the whole stream is reproducible.
-    binds
-        Parent→child links (see :class:`Bind`). **Every bind's parent must be the root** — the topology
-        is a depth-1 star (root + direct children matched to it), not a deeper tree.
-
-    Notes
-    -----
-    Batches per with-replacement pass is *not* configured here: the loader derives it from the root
-    (target) node — a natural epoch of ``root_n_obs // batch_size`` — and restarts each pass. The root
-    drives the zip, so every node's sampler draws the same number of batches.
-    """
-
-    sources: Mapping[str, Container]
-    nodes: Mapping[str, Node]
-    root: str
-    seed: int
-    binds: tuple[Bind, ...] = ()
-
-    @classmethod
-    def from_paths(
-        cls,
-        sources: Mapping[str, Container | str | PathLike | Sequence[str | PathLike]],
-        nodes: Mapping[str, Node],
-        root: str,
-        seed: int,
-        binds: tuple[Bind, ...] = (),
-    ) -> Scheme:
-        """Build a :class:`Scheme` where a source may be given as a zarr path (or list of paths).
-
-        Same signature as the constructor, but each ``sources`` value may additionally be:
-
-        * a **path** to a single zarr adata → read backed (only the reps the referencing nodes use);
-        * a **path** to an annbatch collection root → opened as a :class:`~annbatch.DatasetCollection`
-          (auto-detected from its ``encoding-type``);
-        * a **list of paths** to zarr adatas → a list of backed AnnData streamed as one source (one
-          annbatch backing per adata, in list order).
-
-        An already-constructed :data:`Container` (AnnData / DatasetCollection / list of AnnData) passes
-        through unchanged. Everything on disk is expected in **zarr**. Only the ``keys`` and ``cols`` the
-        nodes referencing a source actually need are read (see :func:`~binded._io.open_source`).
-        """
-        from scfit.data._io import open_source
-
-        keys_by_src: dict[str, set[str]] = {name: set() for name in sources}
-        cols_by_src: dict[str, set[str]] = {name: set() for name in sources}
-        for node in nodes.values():
-            if node.source in keys_by_src:  # unknown sources are reported by __post_init__
-                keys_by_src[node.source].update(node.keys)
-                cols_by_src[node.source].update(node.cols)
-        resolved = {
-            name: open_source(src, keys=sorted(keys_by_src[name]), cols=sorted(cols_by_src[name]))
-            for name, src in sources.items()
-        }
-        return cls(sources=resolved, nodes=nodes, root=root, seed=seed, binds=binds)
-
-    def __post_init__(self) -> None:  # structural: depth-1 star + references
-        if self.root not in self.nodes:
-            raise ValueError(f"root {self.root!r} not in nodes.")
-        for name, n in self.nodes.items():
-            if n.source not in self.sources:
-                raise ValueError(f"node {name!r} references unknown source {n.source!r}.")
-        parents: dict[str, str] = {}
-        for b in self.binds:
-            if b.parent not in self.nodes or b.child not in self.nodes:
-                raise ValueError("bind references unknown node.")
-            if b.parent != self.root:
-                raise ValueError(
-                    f"bind parent must be the root {self.root!r}; got {b.parent!r}. Bind {b.child!r} directly "
-                    f"to the root — the topology is a depth-1 star (root + direct children), not a deeper tree."
-                )
-            if b.child in parents:
-                raise ValueError(f"node {b.child!r} is bound more than once.")
-            parents[b.child] = b.parent
-            shared = set(self.nodes[b.parent].cols) & set(self.nodes[b.child].cols)
-            if not set(b.common) <= shared:
-                raise ValueError(f"bind.common {b.common} must be ⊆ shared cols of {b.parent}&{b.child} ({shared}).")
-        if self.root in parents:
-            raise ValueError("root must have no parent.")
-        for name in self.nodes:
-            if name != self.root and name not in parents:
-                raise ValueError(f"non-root node {name!r} is not bound to the root.")
+    def __repr__(self) -> str:
+        return (
+            f"Stream(group_by={self.group_by}, rep={self.rep}, match_on={self.match_on}, "
+            f"in_memory={self.in_memory}, weights={'uniform' if self.weights is None else 'custom'})"
+        )

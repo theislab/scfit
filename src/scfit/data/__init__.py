@@ -1,39 +1,15 @@
-r"""Declarative, index-free class-mapping sampler over annbatch.
+r"""Declarative, index-free class-mapping data loading over annbatch.
 
-A :class:`Scheme` is a root :class:`Node` (the target) plus its direct children over named cell
-sources — a depth-1 star; each node partitions its source's cells into leaves (unique
-column-combinations) with a per-combination weight mapping. :class:`Loader` streams matched batches
-keyed by node name (``{node name: {rep loc: rows}}``, plus ``"annotations"``) — one annotation per
-batch — where the root's per-batch category is drawn from its weights (annbatch ``ClassSampler``) and
-each bound child replays that schedule via an annbatch ``BoundClassSampler`` (matched on the bind's
-shared columns) so the loaders zip batch-for-batch. No row indices are exposed: the scheme is
-columns / keys / weights.
+Everything is a :class:`Stream` — one streamed population over a source (its grouping columns, reps,
+per-group weights, and, for a matched *partner*, the columns it shares with the primary). :class:`Loader`
+takes one primary Stream plus any number of named partner Streams and yields matched batches keyed by
+stream name (``{stream name: {rep loc: rows}}``, plus ``"annotations"``): the primary is the target, each
+partner a source drawn from the same ``match_on`` context. No row indices are exposed.
 
-See ``README.md`` (next to this file) for the model, the sampling schemes, and the mapping to
-cellflow and sc-flow-tools use-cases.
+See ``README.md`` (next to this file) for the model and the cellflow / sc-flow-tools mapping.
 """
 
-from scfit.data._io import leaf_codes
 from scfit.data._loader import Annotations, Loader
-from scfit.data._schema import (
-    Bind,
-    Container,
-    Node,
-    SamplerConfig,
-    Scheme,
-)
-from scfit.data._split import resolve_split_configs, split_assignment, split_scheme
+from scfit.data._schema import Stream
 
-__all__ = [
-    "Annotations",
-    "Bind",
-    "Container",
-    "Loader",
-    "Node",
-    "SamplerConfig",
-    "Scheme",
-    "leaf_codes",
-    "resolve_split_configs",
-    "split_assignment",
-    "split_scheme",
-]
+__all__ = ["Annotations", "Loader", "Stream"]
