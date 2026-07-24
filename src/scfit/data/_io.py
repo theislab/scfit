@@ -101,6 +101,7 @@ def materialize_node(
     sub_obs = obs.iloc[row_idx].reset_index(drop=True)
     order = sub_obs.sort_values(list(cols), kind="stable").index.to_numpy()  # contiguous runs for chunk>1
     sub_obs, reps = sub_obs.iloc[order].reset_index(drop=True), {k: v[order] for k, v in reps.items()}
+    sub_obs.index = sub_obs.index.astype(str)
     adata = ad.AnnData(X=reps["X"], obs=sub_obs) if "X" in reps else ad.AnnData(obs=sub_obs)  # X -> n_var inferred
     for loc, v in reps.items():  # place each non-X rep so `get_from_container(adata, loc)` finds it again
         if loc != "X":
@@ -199,7 +200,7 @@ def _align_categoricals(frames: list[pd.DataFrame]) -> None:
             continue
         union = union_categoricals(series, ignore_order=True).categories
         for f in frames:
-            f[col] = f[col].cat.set_categories(union)
+            f.loc[:, col] = f[col].cat.set_categories(union)
 
 
 def _read_obs_cols(obs_group, cols: Sequence[str]) -> pd.DataFrame:
@@ -228,8 +229,10 @@ def load_backed_adata(g, *, keys: Sequence[str], cols: Sequence[str] = ()) -> ad
     ``get_from_container`` finds it again. ``var`` is reduced to its index and ``obs`` to ``cols``.
     """
     var = g["var"]
+    obs = _read_obs_cols(g["obs"], cols)
+    obs.index = obs.index.astype(str)
     kw: dict = {
-        "obs": _read_obs_cols(g["obs"], cols),
+        "obs": obs,
         "var": pd.DataFrame(index=pd.Index(ad.io.read_elem(var[var.attrs.get("_index")]))),
     }
     if "X" in keys:
