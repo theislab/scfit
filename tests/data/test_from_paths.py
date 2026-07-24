@@ -1,61 +1,61 @@
-"""``Scheme.from_paths`` — resolving zarr paths (single adata / collection root / list) to sources.
+"""Path sources — a ``Stream`` takes a zarr path (or list of paths) and the ``Loader`` opens it backed.
 
-Covers the three source-value shapes the classmethod adds on top of the constructor, the auto-detection
-of a single path (adata vs annbatch collection root), the "load only the reps the nodes use" contract,
-and that a resolved scheme streams matched batches end-to-end just like a constructed one.
+Covers the source-value shapes (single path / list of paths / already-constructed AnnData), the "load only
+the reps the stream uses" contract (via ``load_backed_adata``), that an annbatch collection root is
+rejected (unsupported), and that a path-sourced loader streams matched batches end-to-end.
 """
 
 from __future__ import annotations
 
-import numpy as np
-import pytest
-
-pytest.importorskip("annbatch")
-
 import warnings
 
 import anndata as ad
+import numpy as np
+import pytest
 import scipy.sparse as sp
 from annbatch import DatasetCollection
 from scheme_helpers import perturbation_obs, uniform, write_zarr
 
-from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme
+from scfit.data import Loader, Stream
 from scfit.data._io import load_backed_adata
 
 LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2")
 COLS = ("cell_line", "drug")
+READ = {"batch_size": 16, "chunk_size": 16, "preload_nchunks": 1, "to": None}
 
 
 def _adata(n_per_combo: int = 16, seed: int = 0) -> ad.AnnData:
-    """Sparse X + an obsm rep + a layer + an unreferenced obs column (from_paths must load only what nodes use)."""
+    """Sparse X + an obsm rep + a layer + an unreferenced obs column (open must load only what's used)."""
     rng = np.random.default_rng(seed)
     obs = perturbation_obs(LINES, DRUGS, n_per_combo)
-    obs["extra"] = "unused"  # an obs column no node references — must not be required
+    obs["extra"] = "unused"  # an obs column no stream references — must not be required
     a = ad.AnnData(X=sp.csr_matrix(rng.random((len(obs), 5), dtype="float32")), obs=obs)
     a.obsm["emb"] = rng.random((len(obs), 3), dtype="float32")
     a.layers["log1p"] = sp.csr_matrix(rng.random((len(obs), 5), dtype="float32"))
     return a
 
 
-def _weights():
+def _streams(source):
     combos = {(cl, dr) for cl in LINES for dr in DRUGS}
     pert = uniform([c for c in combos if c[1] != "control"])
     ctrl = uniform([c for c in combos if c[1] == "control"])
-    return pert, ctrl
+    return (
+        Stream(source, group_by=COLS, rep="X", weights=pert),
+        {"ctrl": Stream(source, group_by=COLS, rep=("X", "obsm/emb"), match_on=("cell_line",), weights=ctrl)},
+    )
 
 
-def _cfg() -> SamplerConfig:
-    return SamplerConfig(batch_size=16, chunk_size=16, preload_nchunks=1, to=None)
+def _open_group(path):
+    import zarr
+
+    return zarr.open_group(path, mode="r")
 
 
 # ── load_backed_adata: only the requested reps/cols are materialized ───────────────────────────
-
-
 def test_load_backed_adata_reads_only_requested_keys(tmp_path):
     g = _open_group(write_zarr(_adata(), tmp_path / "a.zarr"))
     backed = load_backed_adata(g, keys=("X", "obsm/emb"), cols=COLS)
-
     assert isinstance(backed.X, ad.abc.CSRDataset)  # sparse rep stays backed (not read into RAM)
     assert list(backed.obsm) == ["emb"]  # obsm/emb requested → present
     assert "log1p" not in backed.layers  # layers/log1p not requested → never touched
@@ -66,127 +66,46 @@ def test_load_backed_adata_reads_only_requested_keys(tmp_path):
 def test_load_backed_adata_layers_and_no_x(tmp_path):
     g = _open_group(write_zarr(_adata(), tmp_path / "a.zarr"))
     backed = load_backed_adata(g, keys=("layers/log1p",), cols=("cell_line",))
-
     assert backed.X is None  # X not requested
     assert "log1p" in backed.layers  # requested layer present
     assert list(backed.obs.columns) == ["cell_line"]
 
 
-def _open_group(path):
-    import zarr
-
-    return zarr.open_group(path, mode="r")
-
-
-# ── open_source / from_paths: the three source-value shapes ────────────────────────────────────
-
-
-def test_from_paths_single_adata_path_autodetects_adata(tmp_path):
-    pert, ctrl = _weights()
+# ── Stream source-value shapes, via the Loader ─────────────────────────────────────────────────
+def test_single_path_source_opened_backed_and_streams(tmp_path):
     p = write_zarr(_adata(), tmp_path / "a.zarr")
-    nodes = {"pert": Node("data", COLS, "X", pert), "ctrl": Node("data", COLS, ("X", "obsm/emb"), ctrl)}
-    s = Scheme.from_paths(
-        sources={"data": p}, nodes=nodes, root="pert", seed=0, binds=(Bind("pert", "ctrl", ("cell_line",)),)
-    )
-
-    src = s.sources["data"]
-    assert isinstance(src, ad.AnnData)
-    assert isinstance(src.X, ad.abc.CSRDataset)  # backed, not in-memory
-    assert list(src.obsm) == ["emb"]  # union of the nodes' keys → only obsm/emb
-    assert "log1p" not in src.layers
+    loader = Loader(*_streams(p), seed=0, **READ)
+    assert isinstance(loader._sources["primary"].X, ad.abc.CSRDataset)  # backed, not in-memory
+    assert list(loader._sources["ctrl"].obsm) == ["emb"]  # only the reps the ctrl stream uses
+    assert "log1p" not in loader._sources["ctrl"].layers
+    b = next(iter(loader))
+    assert b["primary"]["X"].shape == (16, 5)
+    assert b["ctrl"]["X"].shape == (16, 5)  # matched control rows
+    assert b["ctrl"]["obsm/emb"].shape == (16, 3)  # aligned obsm rep of the same cells
 
 
-@pytest.mark.xfail(reason="DatasetCollection support is not yet implemented in open_source.", strict=True)
-def test_from_paths_collection_root_autodetects_dataset_collection(tmp_path):
-    pert, ctrl = _weights()
+def test_list_of_paths_source_streams(tmp_path):
+    paths = [write_zarr(_adata(seed=i), tmp_path / f"a{i}.zarr") for i in range(2)]
+    loader = Loader(*_streams(paths), seed=0, **READ)
+    src = loader._sources["primary"]
+    assert isinstance(src, list) and len(src) == 2 and all(isinstance(a, ad.AnnData) for a in src)
+    assert next(iter(loader))["primary"]["X"].shape == (16, 5)
+
+
+def test_in_memory_source_passes_through():
+    # an already-constructed container is returned unchanged (not re-opened). Tested at the open_source
+    # boundary so it doesn't depend on annbatch's in-memory-sparse path (which needs the numba extra).
+    from scfit.data._io import open_source
+
+    adata = _adata()
+    assert open_source(adata, keys=("X",), cols=COLS) is adata
+
+
+def test_collection_root_is_unsupported(tmp_path):
     ap = write_zarr(_adata(), tmp_path / "a.zarr")
     cp = str(tmp_path / "coll.zarr")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         DatasetCollection(cp, mode="a").add_adatas([ap], groupby=list(COLS), shuffle=False)
-
-    nodes = {"pert": Node("data", COLS, "X", pert), "ctrl": Node("data", COLS, "X", ctrl)}
-    s = Scheme.from_paths(
-        sources={"data": cp}, nodes=nodes, root="pert", seed=0, binds=(Bind("pert", "ctrl", ("cell_line",)),)
-    )
-    assert isinstance(s.sources["data"], DatasetCollection)
-
-
-def test_from_paths_list_of_paths_gives_list_of_backed_adata(tmp_path):
-    pert, ctrl = _weights()
-    paths = [write_zarr(_adata(seed=i), tmp_path / f"a{i}.zarr") for i in range(2)]
-    nodes = {"pert": Node("data", COLS, "X", pert), "ctrl": Node("data", COLS, "X", ctrl)}
-    s = Scheme.from_paths(
-        sources={"data": paths}, nodes=nodes, root="pert", seed=0, binds=(Bind("pert", "ctrl", ("cell_line",)),)
-    )
-
-    src = s.sources["data"]
-    assert isinstance(src, list) and len(src) == 2
-    assert all(isinstance(a, ad.AnnData) for a in src)
-
-
-def test_from_paths_passes_through_constructed_containers(tmp_path):
-    pert, ctrl = _weights()
-    adata = _adata()  # already in-memory AnnData
-    nodes = {"pert": Node("data", COLS, "X", pert), "ctrl": Node("data", COLS, "X", ctrl)}
-    s = Scheme.from_paths(
-        sources={"data": adata}, nodes=nodes, root="pert", seed=0, binds=(Bind("pert", "ctrl", ("cell_line",)),)
-    )
-    assert s.sources["data"] is adata  # unchanged
-
-
-# ── end-to-end: a from_paths scheme streams matched batches ────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "make_source",
-    [
-        pytest.param(lambda tp: write_zarr(_adata(), tp / "a.zarr"), id="single-path"),
-        pytest.param(lambda tp: [write_zarr(_adata(seed=i), tp / f"a{i}.zarr") for i in range(2)], id="list-of-paths"),
-    ],
-)
-def test_from_paths_streams_matched_batches(tmp_path, make_source):
-    pert, ctrl = _weights()
-    src = make_source(tmp_path)
-    nodes = {"pert": Node("data", COLS, "X", pert), "ctrl": Node("data", COLS, ("X", "obsm/emb"), ctrl)}
-    s = Scheme.from_paths(
-        sources={"data": src}, nodes=nodes, root="pert", seed=0, binds=(Bind("pert", "ctrl", ("cell_line",)),)
-    )
-
-    batch = next(iter(Loader(s, _cfg())))
-    assert batch["pert"]["X"].shape == (16, 5)  # batch keyed by node name → rep loc
-    assert batch["ctrl"]["X"].shape == (16, 5)  # matched control rows
-    assert batch["ctrl"]["obsm/emb"].shape == (16, 3)  # aligned obsm rep of the same cells
-
-
-# ── Node.keys accepts anndata.acc accessors (normalized to loc strings) ────────────────────────
-
-
-def test_node_keys_accept_anndata_accessors():
-    from anndata.acc import A
-
-    from scfit.data import Node
-
-    # accessors pass through; legacy loc strings normalize to the equivalent accessor
-    assert Node("s", COLS, A.X).keys == ("X",)
-    assert Node("s", COLS, A.obsm["emb"]).keys == ("obsm/emb",)
-    assert Node("s", COLS, A.layers["log1p"]).keys == ("layers/log1p",)
-    assert Node("s", COLS, (A.X, A.obsm["emb"])).keys == ("X", "obsm/emb")
-    # mixed accessor + legacy string both land on accessors
-    assert Node("s", COLS, (A.X, "layers/log1p")).keys == ("X", "layers/log1p")
-
-
-def test_from_paths_streams_with_accessor_keys(tmp_path):
-    from anndata.acc import A
-
-    pert, ctrl = _weights()
-    p = write_zarr(_adata(), tmp_path / "a.zarr")
-    # describe the spots with accessors instead of "X" / "obsm/emb" strings
-    nodes = {"pert": Node("data", COLS, A.X, pert), "ctrl": Node("data", COLS, (A.X, A.obsm["emb"]), ctrl)}
-    s = Scheme.from_paths(
-        sources={"data": p}, nodes=nodes, root="pert", seed=0, binds=(Bind("pert", "ctrl", ("cell_line",)),)
-    )
-
-    assert list(s.sources["data"].obsm) == ["emb"]  # accessor-described rep resolved & loaded
-    batch = next(iter(Loader(s, _cfg())))
-    assert batch["ctrl"]["obsm/emb"].shape == (16, 3)  # keyed by child node name, then normalized loc string
+    with pytest.raises(NotImplementedError, match="DatasetCollection"):
+        Loader(*_streams(cp), seed=0, **READ)

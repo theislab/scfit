@@ -1,15 +1,17 @@
-"""Shared perturbation-test fixtures: the cellflow-shaped Scheme + the tiny AnnData builders it reads.
+"""Shared perturbation-test fixtures: the ``Stream``/``Loader`` builders + the tiny AnnData makers.
 
-All test-only (moved out of ``binded``'s public API; production cellflow assembles the scheme internally
-via :func:`cellflow.data._annbatch.build_annbatch_training`). A perturbation dataset is the product of
-cell lines × drugs, with ``control`` marking the control drug:
+All test-only. A perturbation dataset is the product of cell lines × drugs, with ``control`` marking the
+control drug:
 
 * :func:`encoded_adata` — X *encodes each cell's identity* (``[cell_line, drug, is_control, row_id]``, see
   the :data:`LINE`/:data:`DRUG`/:data:`IS_CONTROL`/:data:`ROW_ID` column indices), so a yielded batch row
-  can be decoded and checked against the leaf it must belong to.
-* :func:`feature_adata` — a realistic random matrix, for metric / pickle tests that don't decode identity.
-* :func:`perturbation_scheme` — the two-node ``perturbed root ← bound control`` Scheme over any such source
-  (matched on ``context``); options cover an in-memory control and per-node reps.
+  can be decoded and checked against the label it must belong to.
+* :func:`feature_adata` — a realistic random matrix, for pickle / metric tests that don't decode identity.
+* :func:`perturbation_streams` / :func:`perturbation_loader` — the ``primary`` (perturbed) + matched
+  ``ctrl`` (control) streams over any such source, the control linked to the primary on ``context``.
+
+Batch schema (new API): ``{stream name: {rep loc: rows}}`` for ``"primary"`` and each link, plus optional
+``"labels"`` (per-stream ``{realm: array}`` for streams given a ``label_lookup``).
 
 Importable bare (``from scheme_helpers import ...``) via the ``pythonpath = ["tests/data"]`` pytest setting.
 """
@@ -24,9 +26,8 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 
-from scfit.data import Bind, Node, Scheme
+from scfit.data import Loader, Stream
 from scfit.data._io import obs_columns
-from scfit.data._schema import Container
 
 LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2", "d3")
@@ -37,18 +38,8 @@ LINE, DRUG, IS_CONTROL, ROW_ID = 0, 1, 2, 3
 
 
 def uniform(combos: Sequence[tuple]) -> dict[tuple, float]:
-    """Every combination equally likely."""
+    """Every combination equally likely (a plain ``{combo: 1.0}`` weight map — test convenience)."""
     return {tuple(c): 1.0 for c in combos}
-
-
-def frequency(counts: Mapping[tuple, int]) -> dict[tuple, float]:
-    """Sample each combination ∝ its cell count (favor abundant conditions)."""
-    return {tuple(k): float(c) for k, c in counts.items()}
-
-
-def inverse_frequency(counts: Mapping[tuple, int]) -> dict[tuple, float]:
-    """Sample each combination ∝ 1 / cell count (balance rare vs abundant conditions)."""
-    return {tuple(k): 1.0 / c for k, c in counts.items()}
 
 
 def codes(values: Sequence[str]) -> dict[str, int]:
@@ -86,8 +77,8 @@ def encoded_adata(
 
     X columns are ``[cell_line code, drug code, is_control, global row id]`` (see :data:`LINE` etc.).
     ``line``/``drug`` override the code maps (default: enumeration of ``lines``/``drugs``) — pass explicit
-    maps when several stores must share one global vocabulary. ``row_id_start`` offsets the row ids so
-    ids stay unique across stores; ``obsm_rep`` adds an ``obsm['rep']`` copy of X (an aligned rep).
+    maps when several stores must share one global vocabulary. ``row_id_start`` offsets the row ids so ids
+    stay unique across stores; ``obsm_rep`` adds an ``obsm['rep']`` copy of X (an aligned rep).
     """
     obs = perturbation_obs(lines, drugs, n_per_combo, index_prefix=index_prefix)
     line = codes(lines) if line is None else line
@@ -116,7 +107,7 @@ def feature_adata(
     seed: int = 0,
     obsm_rep: bool = False,
 ) -> ad.AnnData:
-    """AnnData with a realistic random feature matrix (metric / pickle tests — no identity to decode)."""
+    """AnnData with a realistic random feature matrix (pickle / metric tests — no identity to decode)."""
     obs = perturbation_obs(lines, drugs, n_per_combo)
     x = np.random.default_rng(seed).standard_normal((len(obs), n_genes)).astype("float32")
     adata = ad.AnnData(x, obs=obs)
@@ -135,30 +126,43 @@ def write_zarr(adata: ad.AnnData, path) -> str:
     return str(path)
 
 
-def perturbation_scheme(
-    source: Container,
+def perturbation_labels(lines: Sequence[str] = LINES, drugs: Sequence[str] = DRUGS) -> dict:
+    """A ``label_lookup`` for the primary: ``{(cell_line, drug): {"condition": [[line_code, drug_code]]}}``.
+
+    Covers exactly the perturbed labels (drug != control) — the primary's positive-weight groups.
+    """
+    _LINE, _DRUG = codes(lines), codes(drugs)
+    return {
+        (cl, dr): {"condition": np.array([[_LINE[cl], _DRUG[dr]]], dtype=np.int64)}
+        for cl in lines
+        for dr in drugs
+        if dr != CONTROL
+    }
+
+
+def perturbation_streams(
+    source,
     *,
     context: Sequence[str] = ("cell_line",),
     perturbation: Sequence[str] = ("drug",),
     control_values: Mapping[str, object] | None = None,
-    key: str | Sequence[str] = "X",
-    ctrl_key: str | Sequence[str] | None = None,
+    rep: str | Sequence[str] = "X",
+    ctrl_rep: str | Sequence[str] | None = None,
     ctrl_in_memory: bool = False,
-    seed: int = 0,
-) -> Scheme:
-    """The two-node perturbation Scheme: root = perturbed combos, child = control combos, bound on context.
+    ctrl_match_on: Sequence[str] | None = None,
+    label_lookup: Mapping | None = None,
+) -> tuple[Stream, dict[str, Stream]]:
+    """The two streams — ``primary`` (perturbed) and linked ``ctrl`` (control) — matched on ``context``.
 
-    Control vs perturbed is encoded purely by which combinations carry weight (no ``select`` step); the
-    control node is bound to the perturbed root on ``context``, so each batch's control cells come from the
-    same context (cell line, …) as the perturbed cells — the source↔target matching. Parameters mirror
-    cellflow: ``context`` = ``split_covariates``, ``perturbation`` = the perturbation columns,
-    ``control_values`` = which value marks control per column (default ``{"drug": "control"}``), ``key`` =
-    ``sample_rep``. ``ctrl_key`` overrides the control node's reps (default: same as ``key``);
-    ``ctrl_in_memory`` materializes the control cells into RAM (see :func:`~binded._io.materialize_node`).
+    Control vs perturbed is encoded purely by which combinations carry weight (uniform over each side).
+    Returns ``(primary, {"ctrl": ...})`` — splat into :class:`~scfit.data.Loader`. ``ctrl_match_on``
+    overrides the control's ``match_on`` (default = ``context``; pass ``()`` for an unconditional control).
+    ``label_lookup`` is attached to the primary; ``ctrl_in_memory`` materializes the control cells.
     """
     context, perturbation = tuple(context), tuple(perturbation)
     control_values = {"drug": CONTROL} if control_values is None else dict(control_values)
-    ctrl_key = key if ctrl_key is None else ctrl_key
+    ctrl_rep = rep if ctrl_rep is None else ctrl_rep
+    match_on = context if ctrl_match_on is None else tuple(ctrl_match_on)
     cols = (*context, *perturbation)
     combos = [tuple(r) for r in obs_columns(source, cols).drop_duplicates().to_numpy()]
 
@@ -167,28 +171,48 @@ def perturbation_scheme(
 
     pert = [c for c in combos if not is_control(c)]
     ctrl = [c for c in combos if is_control(c)]
-    return Scheme(
-        sources={"data": source},
-        nodes={
-            "pert": Node("data", cols, key, uniform(pert)),
-            "ctrl": Node("data", cols, ctrl_key, uniform(ctrl), in_memory=ctrl_in_memory),
-        },
-        root="pert",
-        binds=(Bind("pert", "ctrl", common=context),),
+    primary = Stream(source, group_by=cols, rep=rep, weights=uniform(pert), label_lookup=label_lookup)
+    control = Stream(
+        source, group_by=cols, rep=ctrl_rep, weights=uniform(ctrl), match_on=match_on, in_memory=ctrl_in_memory
+    )
+    return primary, {"ctrl": control}
+
+
+def perturbation_loader(
+    source,
+    *,
+    seed: int = 0,
+    batch_size: int = 8,
+    chunk_size: int = 1,
+    preload_nchunks: int = 8,
+    to: str | None = "torch",
+    preload_to_gpu: bool = False,
+    **stream_kwargs,
+) -> Loader:
+    """A :class:`~scfit.data.Loader` over :func:`perturbation_streams` with the given read parameters."""
+    primary, links = perturbation_streams(source, **stream_kwargs)
+    return Loader(
+        primary,
+        links,
         seed=seed,
+        batch_size=batch_size,
+        chunk_size=chunk_size,
+        preload_nchunks=preload_nchunks,
+        to=to,
+        preload_to_gpu=preload_to_gpu,
     )
 
 
-# ── batch-reading helpers (the read side; they hide the {node: {rep loc: rows}} batch schema) ──────────
+# ── batch-reading helpers (the read side; they hide the {stream: {rep loc: rows}} batch schema) ──────────
 
 
-def rep(batch, node: str, key: str = "X") -> np.ndarray:
-    """Rows of one rep of a node's batch — ``batch[node][key]`` as a dense ndarray."""
-    return np.asarray(batch[node][key])
+def rep(batch, stream: str, key: str = "X") -> np.ndarray:
+    """Rows of one rep of a stream's batch — ``batch[stream][key]`` as a dense ndarray."""
+    return np.asarray(batch[stream][key])
 
 
 def only_leaf(rows: np.ndarray) -> tuple[int, int]:
-    """Assert ``rows`` is a single leaf and return its decoded ``(cell_line, drug)`` codes.
+    """Assert ``rows`` is a single label and return its decoded ``(cell_line, drug)`` codes.
 
     For an :func:`encoded_adata` batch: X column :data:`LINE`/:data:`DRUG` hold the codes, so a pure batch
     has exactly one unique value in each. Raises (via assert) if the batch mixes conditions — which is also
@@ -199,15 +223,15 @@ def only_leaf(rows: np.ndarray) -> tuple[int, int]:
     return int(line[0]), int(drug[0])
 
 
-def leaf_shares(loader, node: str, n: int) -> dict[tuple[int, int], float]:
-    """Empirical fraction of ``n`` batches whose ``node`` batch is each leaf (decoded from X)."""
-    seen = Counter(only_leaf(rep(b, node)) for b in islice(loader, n))
+def leaf_shares(loader, stream: str, n: int) -> dict[tuple[int, int], float]:
+    """Empirical fraction of ``n`` batches whose ``stream`` batch is each label (decoded from X)."""
+    seen = Counter(only_leaf(rep(b, stream)) for b in islice(loader, n))
     total = sum(seen.values())
     return {leaf: c / total for leaf, c in seen.items()}
 
 
 def assert_shares(actual: Mapping, expected: Mapping, atol: float = 0.03) -> None:
-    """Assert the sampled leaf set equals ``expected`` and each share is within ``atol`` of its target."""
-    assert set(actual) == set(expected), f"sampled leaves {sorted(actual)} != {sorted(expected)}"
+    """Assert the sampled label set equals ``expected`` and each share is within ``atol`` of its target."""
+    assert set(actual) == set(expected), f"sampled labels {sorted(actual)} != {sorted(expected)}"
     for leaf, exp in expected.items():
         assert abs(actual[leaf] - exp) <= atol, f"{leaf}: share {actual[leaf]:.3f} vs expected {exp}"

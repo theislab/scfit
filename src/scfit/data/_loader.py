@@ -104,6 +104,10 @@ class Loader:
 
         # Per stream: resolve source (materializing an in_memory stream into RAM) + build its tuple-labelled
         # categorical / weight vector / leaf list (obs only — no cell matrices).
+        # (id(source), cols) -> the source's full-obs (codes, leaves): streams sharing a source object (e.g. a
+        # primary and its matched control over the same AnnData) factorize its obs ONCE. Construction-only
+        # scratch, emptied on pickle (each stream's categorical already carries its own codes).
+        self._leaf_cache: dict[tuple, tuple[np.ndarray, list[tuple]]] = {}
         self._resolved: dict[str, Container] = {}
         self._st: dict[str, dict] = {}
         for name, s in self._streams.items():
@@ -136,12 +140,17 @@ class Loader:
     def _prepare(self, name: str, s: Stream) -> tuple[Container, pd.Categorical, np.ndarray, list[tuple]]:
         """A stream's resolved source + its categorical, weight vector and leaf list (obs only).
 
-        An ``in_memory`` stream is materialized into RAM here (positive-weight rows only), reusing the source
-        factorization; a non-materialized stream reads straight from the resolved source. The tuple-labelled
-        categorical is what lets a link match the primary by ``match_on`` (annbatch projects the label).
+        The source's ``(codes, leaves)`` are factorized once per ``(source object, group_by)`` and cached, so
+        streams sharing a source (a primary and its matched control over the same AnnData) factorize its obs
+        only once. An ``in_memory`` stream is then materialized into RAM (positive-weight rows only), reusing
+        that factorization; others read straight from the resolved source. The tuple-labelled categorical is
+        what lets a link match the primary by ``match_on`` (annbatch projects the label).
         """
         src = self._sources[name]
-        codes, leaves = leaf_codes(obs_columns(src, s.group_by), s.group_by)
+        ck = (id(src), s.group_by)
+        if ck not in self._leaf_cache:
+            self._leaf_cache[ck] = leaf_codes(obs_columns(src, s.group_by), s.group_by)
+        codes, leaves = self._leaf_cache[ck]
         if s.in_memory:
             src, codes, leaves = materialize_node(src, s, (codes, leaves))
         cats = pd.Categorical.from_codes(codes, pd.MultiIndex.from_tuples(leaves).to_flat_index())
@@ -217,10 +226,12 @@ class Loader:
         """Pickle without the live annbatch iterators (generators aren't picklable).
 
         Every sampler's RNG state is kept, so a reloaded loader resumes the same reproducible stream (the
-        next pass) on the next ``__next__``; ``_iters`` is dropped and rebuilt from the restored samplers.
+        next pass) on the next ``__next__``; ``_iters`` is dropped and rebuilt from the restored samplers, and
+        the construction-only ``_leaf_cache`` is emptied (each stream's categorical already carries its codes).
         """
         state = self.__dict__.copy()
         state["_iters"] = None
+        state["_leaf_cache"] = {}
         return state
 
     def __setstate__(self, state: dict[str, object]) -> None:

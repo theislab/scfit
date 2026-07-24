@@ -1,147 +1,119 @@
-"""Structural validation of the scheme spec — Node / Bind / Scheme / config-map guards, no data read.
+"""Structural validation of the ``Stream`` spec + the ``Loader``'s sampler-kwargs resolution.
 
-These are the data-free ``__post_init__`` (and ``_resolve_config_map``) checks: they only assert the
-*shape* of a scheme is accepted or rejected, so they build no :class:`~scfit.data.Loader` and touch no cell
-matrix. Every scheme is spelled out inline — the graph under test is right there in the case.
+The Stream cases are data-free ``__init__`` guards. The Loader cases build a tiny in-memory loader to
+exercise the resolution rules (a stream's own sampler kwargs win; else the loader's; else error) and the
+cross-stream guards (reserved name, match_on ⊆ shared, in_memory ⇒ chunk_size=1, label_lookup coverage).
 """
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
-
-import anndata as ad
 import numpy as np
 import pytest
+from scheme_helpers import encoded_adata, uniform
 
-from scfit.data import Bind, Node, SamplerConfig, Scheme
-from scfit.data._schema import _resolve_config_map
+from scfit.data import Loader, Stream
 
-SRC = ad.AnnData(np.zeros((2, 2), dtype="float32"))  # placeholder source; Scheme never reads it
+ADATA = encoded_adata(("A", "B"), ("d1", "d2"), 8)  # 4 groups × 8 cells (perturbed only — no control needed)
 COLS = ("cell_line", "drug")
-CFG = SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8)
+W = uniform([("A", "d1"), ("A", "d2"), ("B", "d1"), ("B", "d2")])
+SAMPLER = {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
 
 
-def _node(source: str = "data", cols=COLS, **kw) -> Node:
-    return Node(source, cols, **kw)
-
-
-# ── Node ──────────────────────────────────────────────────────────────────────────────────────────
-
-
-def test_node_normalizes_keys_to_tuple():
-    assert Node("data", COLS, "X").keys == ("X",)  # a bare loc string becomes a 1-tuple
-    assert Node("data", COLS, ("X", "obsm/rep")).keys == ("X", "obsm/rep")
-
-
-def test_node_weights_default_is_independent_per_instance():
-    a, b = Node("data", COLS), Node("data", COLS)
-    assert a.weights == {} and b.weights == {} and a.weights is not b.weights
-
-
-def test_node_is_frozen():
-    with pytest.raises(FrozenInstanceError):
-        _node().source = "other"  # type: ignore[misc]
+# ── Stream: shape guards (no Loader built) ───────────────────────────────────────────────────────────
+def test_rep_normalizes_to_tuple():
+    assert Stream(ADATA, group_by=COLS, rep="X").rep == ("X",)  # a bare loc string becomes a 1-tuple
+    assert Stream(ADATA, group_by=COLS, rep=("X", "obsm/rep")).rep == ("X", "obsm/rep")
 
 
 @pytest.mark.parametrize(
-    ("kw", "msg"),
+    ("kw", "exc", "msg"),
     [
-        pytest.param({"cols": ()}, "cols must be non-empty", id="empty_cols"),
-        pytest.param({"keys": ""}, "non-empty representation", id="empty_key"),
-        pytest.param({"keys": ("X", "")}, "non-empty representation", id="one_empty_key"),
-        pytest.param({"weights": {("A",): 1.0}}, "arity", id="weight_arity"),  # arity 1 != 2 cols
-        pytest.param({"weights": {("A", "d1"): -1.0}}, "non-negative", id="negative_weight"),
-    ],
-)
-def test_node_rejects(kw: dict, msg: str):
-    with pytest.raises(ValueError, match=msg):
-        _node(**kw)
-
-
-# ── Bind ──────────────────────────────────────────────────────────────────────────────────────────
-
-
-def test_bind_common_defaults_to_empty():
-    assert Bind("root", "child").common == ()
-
-
-# ── Scheme ────────────────────────────────────────────────────────────────────────────────────────
-
-
-def _scheme(nodes: dict, root: str, binds: tuple = ()) -> Scheme:
-    return Scheme(sources={"data": SRC}, nodes=nodes, root=root, seed=0, binds=binds)
-
-
-def test_scheme_single_node_ok():
-    _scheme({"root": _node()}, "root")
-
-
-def test_scheme_depth1_star_ok():
-    _scheme(
-        {"root": _node(), "c1": _node(cols=("cell_line",)), "c2": _node(cols=("drug",))},
-        "root",
-        binds=(Bind("root", "c1", ("cell_line",)), Bind("root", "c2", ("drug",))),
-    )
-
-
-@pytest.mark.parametrize(
-    ("nodes", "root", "binds", "msg"),
-    [
-        pytest.param({"a": _node()}, "root", (), "not in nodes", id="root_absent"),
-        pytest.param({"root": _node(source="ghost")}, "root", (), "unknown source", id="unknown_source"),
-        pytest.param({"root": _node()}, "root", (Bind("root", "ghost"),), "unknown node", id="bind_unknown_node"),
-        pytest.param(  # a deeper tree is rejected: every bind's parent must be the root (depth-1 star)
-            {"root": _node(), "c": _node(), "gc": _node()},
-            "root",
-            (Bind("root", "c"), Bind("c", "gc")),
-            "must be the root",
-            id="parent_not_root",
-        ),
-        pytest.param(  # the same child bound twice
-            {"root": _node(), "c": _node()},
-            "root",
-            (Bind("root", "c"), Bind("root", "c")),
-            "bound more than once",
-            id="child_bound_twice",
-        ),
-        pytest.param(  # a bind whose child is the root gives the root a parent
-            {"root": _node(), "c": _node()},
-            "root",
-            (Bind("root", "root"),),
-            "root must have no parent",
-            id="root_has_parent",
-        ),
-        pytest.param({"root": _node(), "orphan": _node()}, "root", (), "not bound to the root", id="orphan_node"),
+        pytest.param({"group_by": ()}, ValueError, "group_by must be non-empty", id="empty_group_by"),
+        pytest.param({"group_by": COLS, "rep": 123}, ValueError, "loc strings", id="non_string_rep"),
+        pytest.param({"group_by": COLS, "rep": ""}, ValueError, "loc strings", id="empty_rep"),
+        pytest.param({"group_by": COLS, "rep": ("X", "")}, ValueError, "loc strings", id="one_empty_rep"),
+        pytest.param({"group_by": COLS, "weights": {("A",): 1.0}}, ValueError, "arity", id="weight_arity"),
+        pytest.param({"group_by": COLS, "weights": {("A", "d1"): -1.0}}, ValueError, "non-negative", id="neg_weight"),
         pytest.param(
-            {"root": _node(), "c": _node(cols=("drug",))},
-            "root",
-            (Bind("root", "c", ("cell_line",)),),
-            "shared cols",
-            id="common_not_shared",
+            {"group_by": COLS, "label_lookup": {("A",): {"c": np.zeros((1, 1))}}},
+            ValueError,
+            "label_lookup key",
+            id="label_lookup_arity",
+        ),
+        # sampler kwargs are all-or-nothing on a Stream
+        pytest.param({"group_by": COLS, "batch_size": 8}, ValueError, "all-or-nothing", id="partial_one"),
+        pytest.param(
+            {"group_by": COLS, "batch_size": 8, "chunk_size": 1}, ValueError, "all-or-nothing", id="partial_two"
         ),
     ],
 )
-def test_scheme_rejects(nodes: dict, root: str, binds: tuple, msg: str):
-    with pytest.raises(ValueError, match=msg):
-        _scheme(nodes, root, binds)
+def test_stream_rejects(kw: dict, exc: type[Exception], msg: str):
+    with pytest.raises(exc, match=msg):
+        Stream(ADATA, **kw)
 
 
-# ── SamplerConfig map ───────────────────────────────────────────────────────────────────────────────
+# ── Loader: sampler-kwargs resolution (the merge's new behavior — previously untested) ─────────────────
+def test_stream_sampler_overrides_loader():
+    # the primary sets its own batch_size=4; the loader default is 8 → the primary uses ITS OWN (4).
+    ld = Loader(
+        Stream(ADATA, group_by=COLS, weights=W, batch_size=4, chunk_size=1, preload_nchunks=4),
+        batch_size=8,
+        chunk_size=1,
+        preload_nchunks=8,
+        seed=0,
+    )
+    assert ld._cfg["primary"].batch_size == 4
+    assert next(iter(ld))["primary"]["X"].shape[0] == 4  # and it really yields 4-row batches
 
 
-def test_config_single_applies_to_every_node():
-    assert _resolve_config_map(CFG, ["a", "b"], kind="node") == {"a": CFG, "b": CFG}
+def test_stream_inherits_loader_sampler():
+    ld = Loader(Stream(ADATA, group_by=COLS, weights=W), **SAMPLER, seed=0)
+    assert ld._cfg["primary"].batch_size == 8
 
 
-@pytest.mark.parametrize(
-    ("config", "msg"),
-    [
-        pytest.param({"a": CFG}, "missing config", id="missing_node"),  # b absent
-        pytest.param({"a": CFG, "b": CFG, "c": CFG}, "unknown node", id="extra_node"),
-        pytest.param({"a": CFG, "b": 5}, "must be SamplerConfig", id="bad_value"),
-        pytest.param(5, "must be a SamplerConfig", id="wrong_type"),
-    ],
-)
-def test_config_map_rejects(config, msg: str):
-    with pytest.raises(ValueError, match=msg):
-        _resolve_config_map(config, ["a", "b"], kind="node")
+def test_no_sampler_on_either_raises():
+    with pytest.raises(ValueError, match="neither the Stream nor the Loader"):
+        Loader(Stream(ADATA, group_by=COLS, weights=W), seed=0)
+
+
+def test_loader_partial_sampler_raises():
+    with pytest.raises(ValueError, match="all-or-nothing"):
+        Loader(Stream(ADATA, group_by=COLS, weights=W), batch_size=8, seed=0)
+
+
+# ── Loader: cross-stream guards ────────────────────────────────────────────────────────────────────────
+def test_reserved_primary_link_name():
+    with pytest.raises(ValueError, match="reserved"):
+        Loader(
+            Stream(ADATA, group_by=COLS, weights=W),
+            links={"primary": Stream(ADATA, group_by=COLS, weights=W, match_on=("cell_line",))},
+            **SAMPLER,
+        )
+
+
+def test_match_on_must_be_shared():
+    with pytest.raises(ValueError, match="must be ⊆"):
+        Loader(
+            Stream(ADATA, group_by=("cell_line", "drug"), weights=W),
+            links={
+                "c": Stream(ADATA, group_by=("drug",), match_on=("cell_line",), weights=uniform([("d1",), ("d2",)]))
+            },
+            **SAMPLER,
+        )
+
+
+def test_in_memory_requires_chunk_one():
+    with pytest.raises(ValueError, match="chunk_size=1"):
+        Loader(
+            Stream(ADATA, group_by=COLS, weights=W, in_memory=True, batch_size=8, chunk_size=2, preload_nchunks=8),
+            seed=0,
+        )
+
+
+def test_label_lookup_must_cover_positive_weight_labels():
+    with pytest.raises(ValueError, match="label_lookup misses positive-weight"):
+        Loader(
+            Stream(ADATA, group_by=COLS, weights=W, label_lookup={("A", "d1"): {"c": np.zeros((1, 1))}}),
+            **SAMPLER,
+            seed=0,
+        )

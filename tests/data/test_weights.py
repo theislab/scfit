@@ -1,31 +1,18 @@
-"""Weight helpers and the per-leaf weight vector — what carries weight IS the selection.
+"""The per-leaf weight vector — what carries weight IS the selection.
 
-``uniform`` / ``frequency`` / ``inverse_frequency`` just build ``{combo: weight}`` dicts; ``weight_vector``
-resolves such a dict against a node's ordered leaves into normalized per-leaf probabilities (a leaf absent
-from the mapping, or with weight 0, is excluded). No sampler is built here — pure dict/array math.
+``weight_vector`` resolves a ``{combo: weight}`` dict against a stream's ordered leaves into normalized
+per-leaf probabilities (a leaf absent from the mapping, or with weight 0, is excluded); ``None`` means
+uniform over every leaf. No sampler is built here — pure dict/array math.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
-from scheme_helpers import frequency, inverse_frequency, uniform
 
 from scfit.data._schema import weight_vector
 
 LEAVES = [("A", "d1"), ("A", "d2"), ("B", "d1")]
-
-
-def test_uniform_weights_every_combo_equally():
-    assert uniform(LEAVES) == {("A", "d1"): 1.0, ("A", "d2"): 1.0, ("B", "d1"): 1.0}
-
-
-def test_frequency_is_proportional_to_counts():
-    assert frequency({("A", "d1"): 30, ("B", "d1"): 10}) == {("A", "d1"): 30.0, ("B", "d1"): 10.0}
-
-
-def test_inverse_frequency_balances_rare_vs_abundant():
-    assert inverse_frequency({("A", "d1"): 4, ("B", "d1"): 1}) == {("A", "d1"): 0.25, ("B", "d1"): 1.0}
 
 
 def test_weight_vector_normalizes_to_a_distribution():
@@ -39,6 +26,12 @@ def test_weight_vector_treats_absent_leaf_as_zero():
     np.testing.assert_allclose(v, [0.5, 0.0, 0.5])
 
 
-def testweight_vector_all_zero_over_these_leaves_raises():
+def test_weight_vector_none_is_uniform():
+    v = weight_vector(None, LEAVES)  # None ⇒ every leaf equally likely
+    np.testing.assert_allclose(v, [1 / 3, 1 / 3, 1 / 3])
+    assert v.sum() == pytest.approx(1.0)
+
+
+def test_weight_vector_all_zero_over_these_leaves_raises():
     with pytest.raises(ValueError, match="all-zero"):
-        weight_vector({("Z", "z"): 1.0}, LEAVES)  # no overlap with the node's leaves → nothing to sample
+        weight_vector({("Z", "z"): 1.0}, LEAVES)  # no overlap with the leaves → nothing to sample

@@ -1,9 +1,9 @@
 """Sampler bookkeeping — epoch length, the run-length rule, and non-contiguous coverage.
 
-The scfit analogs of annbatch's ``test_n_batches`` / ``test_sampling_invariants`` (epoch length),
-``test_run_length_error_names_class_labels`` + ``test_zero_weight_class_exempt_from_run_length_rule``
-(the ``chunk_size>1`` contiguous-run rule and its zero-weight exemption), and
-``test_noncontiguous_class_samples_all_runs`` (a leaf split across runs is fully sampled). Schemes inline.
+The scfit analogs of annbatch's ``test_n_batches`` (epoch length), ``test_run_length_error_names_class_labels``
++ ``test_zero_weight_class_exempt_from_run_length_rule`` (the ``chunk_size>1`` contiguous-run rule and its
+zero-weight exemption), and ``test_noncontiguous_class_samples_all_runs`` (a label split across runs is
+fully sampled). Each loader is a single primary stream (no links).
 """
 
 from __future__ import annotations
@@ -14,41 +14,44 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
-
-pytest.importorskip("annbatch")
-
 from scheme_helpers import encoded_adata, only_leaf, rep, uniform
 
-from scfit.data import Loader, Node, SamplerConfig, Scheme
+from scfit.data import Loader, Stream
 
 COLS = ("cell_line", "drug")
 
 
-def _root_only(adata, weights) -> Scheme:
-    return Scheme(sources={"data": adata}, nodes={"root": Node("data", COLS, "X", weights)}, root="root", seed=0)
+def _primary_only(adata, weights, *, batch_size=8, chunk_size=1, preload_nchunks=8) -> Loader:
+    return Loader(
+        Stream(adata, group_by=COLS, weights=weights),
+        seed=0,
+        batch_size=batch_size,
+        chunk_size=chunk_size,
+        preload_nchunks=preload_nchunks,
+    )
 
 
-def test_epoch_length_is_root_obs_over_batch_size():
-    # root = 2 lines × 3 drugs × 16 = 96 target cells; batch 8 → 12 batches per with-replacement pass
+def test_epoch_length_is_primary_obs_over_batch_size():
+    # primary = 2 lines × 3 drugs × 16 = 96 target cells; batch 8 → 12 batches per with-replacement pass
     adata = encoded_adata(("A", "B"), ("d1", "d2", "d3"), n_per_combo=16)
     weights = uniform([(cl, dr) for cl in ("A", "B") for dr in ("d1", "d2", "d3")])
-    loader = Loader(_root_only(adata, weights), SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8))
+    loader = _primary_only(adata, weights)
     assert loader._n_batches == 96 // 8
     list(islice(loader, loader._n_batches))  # consume exactly one pass
     assert loader._pos == loader._n_batches  # the pass boundary is real; the next __next__ starts fresh
 
 
-def test_chunk_run_length_error_names_the_node():
-    # a positive-weight leaf with a 2-row run shorter than chunk_size(4): annbatch raises, scfit re-raises
-    # with the offending node's name prepended (so the user knows *which* node's runs are too short).
+def test_chunk_run_length_error_names_the_stream():
+    # a positive-weight label with a 2-row run shorter than chunk_size(4): annbatch raises, scfit re-raises
+    # with the offending STREAM's name prepended (so the user knows which stream's runs are too short).
     adata = encoded_adata(("A", "B"), ("d1", "d2"), n_per_combo=2)
     weights = uniform([(cl, dr) for cl in ("A", "B") for dr in ("d1", "d2")])
-    with pytest.raises(ValueError, match=r"node 'root'"):
-        Loader(_root_only(adata, weights), SamplerConfig(batch_size=4, chunk_size=4, preload_nchunks=4))
+    with pytest.raises(ValueError, match=r"stream 'primary'"):
+        _primary_only(adata, weights, batch_size=4, chunk_size=4, preload_nchunks=4)
 
 
 def _mixed_runs() -> ad.AnnData:
-    # sorted by (cell_line, drug): perturbed leaves in runs of 8 (>= chunk), controls in runs of 2 (< chunk)
+    # sorted by (cell_line, drug): perturbed labels in runs of 8 (>= chunk), controls in runs of 2 (< chunk)
     rows: list[tuple[str, str]] = []
     for cl in ("A", "B"):
         rows += [(cl, "control")] * 2 + [(cl, "d1")] * 8 + [(cl, "d2")] * 8
@@ -59,12 +62,24 @@ def _mixed_runs() -> ad.AnnData:
 
 
 def test_zero_weight_leaf_is_exempt_from_run_length_rule():
-    adata, cfg = _mixed_runs(), SamplerConfig(batch_size=8, chunk_size=4, preload_nchunks=2)
+    adata = _mixed_runs()
     # excluding the short-run control (weight 0) → its 2-row run is exempt, chunk_size=4 builds fine
-    Loader(_root_only(adata, uniform([(cl, dr) for cl in ("A", "B") for dr in ("d1", "d2")])), cfg)
+    _primary_only(
+        adata,
+        uniform([(cl, dr) for cl in ("A", "B") for dr in ("d1", "d2")]),
+        batch_size=8,
+        chunk_size=4,
+        preload_nchunks=2,
+    )
     # giving that same control a positive weight → its short run now violates the rule
-    with pytest.raises(ValueError, match=r"node 'root'"):
-        Loader(_root_only(adata, uniform([(cl, dr) for cl in ("A", "B") for dr in ("control", "d1", "d2")])), cfg)
+    with pytest.raises(ValueError, match=r"stream 'primary'"):
+        _primary_only(
+            adata,
+            uniform([(cl, dr) for cl in ("A", "B") for dr in ("control", "d1", "d2")]),
+            batch_size=8,
+            chunk_size=4,
+            preload_nchunks=2,
+        )
 
 
 def test_noncontiguous_leaf_is_fully_sampled():
@@ -80,11 +95,12 @@ def test_noncontiguous_leaf_is_fully_sampled():
         ],
         axis=1,
     ).astype("float32")
-    scheme = _root_only(ad.AnnData(x, obs=obs), uniform([("A", "d1"), ("A", "d2")]))
-    loader = Loader(scheme, SamplerConfig(batch_size=4, chunk_size=1, preload_nchunks=4))
+    loader = _primary_only(
+        ad.AnnData(x, obs=obs), uniform([("A", "d1"), ("A", "d2")]), batch_size=4, chunk_size=1, preload_nchunks=4
+    )
     seen: set[int] = set()
     for b in islice(loader, 400):
-        tgt = rep(b, "root")
+        tgt = rep(b, "primary")
         if only_leaf(tgt)[1] == 0:  # a (A, d1) batch
             seen.update(tgt[:, 3].astype(int).tolist())  # collect its ROW_IDs
     assert any(r < 8 for r in seen) and any(r >= 16 for r in seen), "both runs of (A, d1) must be sampled"
