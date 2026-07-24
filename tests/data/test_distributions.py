@@ -1,11 +1,9 @@
-"""Weights are really sampled — empirical leaf frequency tracks the configured weights.
+"""Weights are really sampled — empirical label frequency tracks the configured weights.
 
 Mirrors annbatch's ``test_class_draw_shares`` at the :class:`~scfit.data.Loader` level (decode the batch,
-count leaves over many draws), covering uniform / explicit ratios / zero-or-absent exclusion. Plus the
-scfit-only property: a bound child's leaf distribution is weight-controlled *within* the matched context
-(``P(child extra cols | common)``), which annbatch's ``ClassSampler`` tests have no counterpart for.
-
-Fixed ``seed`` → the stream is reproducible, so ``atol`` is a safe band, not a flaky guess.
+count labels over many draws), covering uniform / explicit ratios / zero-or-absent exclusion. Plus the
+scfit-only property: a linked stream's label distribution is weight-controlled *within* the matched
+context (``P(link extra cols | match_on)``). Fixed ``seed`` → reproducible, so ``atol`` is a safe band.
 """
 
 from __future__ import annotations
@@ -14,15 +12,12 @@ from collections import Counter
 from itertools import islice
 
 import pytest
-
-pytest.importorskip("annbatch")
-
 from scheme_helpers import assert_shares, encoded_adata, leaf_shares, only_leaf, rep, uniform
 
-from scfit.data import Bind, Loader, Node, SamplerConfig, Scheme
+from scfit.data import Loader, Stream
 
 COLS = ("cell_line", "drug")
-CFG = SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8)
+READ = {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
 
 
 @pytest.mark.parametrize(
@@ -45,31 +40,33 @@ CFG = SamplerConfig(batch_size=8, chunk_size=1, preload_nchunks=8)
         ),
     ],
 )
-def test_root_draw_shares(weights: dict, expected: dict):
+def test_primary_draw_shares(weights: dict, expected: dict):
     adata = encoded_adata(("A", "B"), ("d1", "d2"), n_per_combo=64)
-    scheme = Scheme(sources={"data": adata}, nodes={"root": Node("data", COLS, "X", weights)}, root="root", seed=0)
-    assert_shares(leaf_shares(Loader(scheme, CFG), "root", 5000), expected)
+    loader = Loader(Stream(adata, group_by=COLS, weights=weights), **READ, seed=0)
+    assert_shares(leaf_shares(loader, "primary", 5000), expected)
 
 
-def test_source_leaf_follows_child_weights_within_context():
-    # child binds on cell_line but partitions on (cell_line, drug): within line A the source drug must be
-    # drawn 3:1 — i.e. P(drug | cell_line) is weight-controlled (the BoundClassSampler select + project).
+def test_link_label_follows_weights_within_context():
+    # the link matches on cell_line but partitions on (cell_line, drug): within line A the source drug must
+    # be drawn 3:1 — i.e. P(drug | cell_line) is weight-controlled (the BoundClassSampler select + project).
     adata = encoded_adata(("A", "B"), ("d1", "d2"), n_per_combo=64)
-    scheme = Scheme(
-        sources={"data": adata},
-        nodes={
-            "root": Node("data", COLS, "X", uniform([("A", "d1"), ("A", "d2"), ("B", "d1"), ("B", "d2")])),
-            "src": Node("data", COLS, "X", {("A", "d1"): 3, ("A", "d2"): 1, ("B", "d1"): 1, ("B", "d2"): 1}),
+    loader = Loader(
+        Stream(adata, group_by=COLS, weights=uniform([("A", "d1"), ("A", "d2"), ("B", "d1"), ("B", "d2")])),
+        links={
+            "src": Stream(
+                adata,
+                group_by=COLS,
+                match_on=("cell_line",),
+                weights={("A", "d1"): 3, ("A", "d2"): 1, ("B", "d1"): 1, ("B", "d2"): 1},
+            )
         },
-        root="root",
+        **READ,
         seed=0,
-        binds=(Bind("root", "src", common=("cell_line",)),),
     )
-    loader = Loader(scheme, CFG)
     drug_when_a = Counter(
         only_leaf(rep(b, "src"))[1]  # the source drug code...
         for b in islice(loader, 6000)
-        if only_leaf(rep(b, "root"))[0] == 0  # ...on batches whose target is line A (code 0)
+        if only_leaf(rep(b, "primary"))[0] == 0  # ...on batches whose primary is line A (code 0)
     )
     total = sum(drug_when_a.values())
     assert total > 0, "no line-A batches drawn"
