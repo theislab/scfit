@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import anndata as ad
 import numpy as np
 import pandas as pd
 import zarr
 
-from scfit.data._schema import Container, Node, weight_vector
+from scfit.data._schema import Container, weight_vector
+
+if TYPE_CHECKING:
+    from scfit.data._schema import Stream
 
 __all__ = [
     "get_from_container",
@@ -71,36 +75,36 @@ def _read_rows(source: Container, loc: str, row_idx: np.ndarray) -> np.ndarray:
     return np.concatenate(parts, axis=0) if parts else np.empty((0, int(backings[0].shape[1])), dtype=np.float32)
 
 
-# TODO: remove this, this shouldn't be our concern
 def materialize_node(
-    source: Container, node: Node, factorization: tuple[np.ndarray, list[tuple]] | None = None
+    source: Container, stream: Stream, factorization: tuple[np.ndarray, list[tuple]] | None = None
 ) -> tuple[ad.AnnData, np.ndarray, list[tuple]]:
-    """Materialize a node's selected (positive-weight) cells into an in-memory (dense) ``AnnData``.
+    """Materialize a stream's selected (positive-weight) cells into an in-memory (dense) ``AnnData``.
 
-    The general "read this node's cells into RAM" op behind :attr:`~binded.Node.in_memory`: reads only
-    the rows whose leaf has positive weight — for each of the node's reps (``keys``) — and sorts them by
-    ``cols`` so ``chunk_size > 1`` still reads contiguous runs. Handles dense and sparse (CSR-group)
-    backings alike (via :func:`key_backings`). Cells must fit host RAM (the intended use is a small,
-    frequently re-drawn population such as matched controls).
+    The "read this stream's cells into RAM" op behind :attr:`~scfit.data.Stream.in_memory`: reads only the
+    rows whose leaf has positive weight — for each of the stream's reps (``rep``) — and sorts them by
+    ``group_by`` so ``chunk_size > 1`` still reads contiguous runs. Handles dense and sparse (CSR-group)
+    backings alike. Cells must fit host RAM (the intended use is a small, frequently re-drawn population
+    such as matched controls).
 
     Returns the materialized ``AnnData`` together with *its* ``(codes, leaves)`` factorization — the caller
     (the loader's sampler) needs the subset's categorical, and it is derived here from the source
     factorization rather than re-factorizing the subset obs. Pass ``factorization`` — the source's
-    :func:`leaf_codes` over ``node.cols`` — to reuse a cached one (the source obs is then never factorized
-    a second time); omit it and it is computed here for standalone use.
+    :func:`leaf_codes` over ``group_by`` — to reuse a cached one (the source obs is then never factorized a
+    second time); omit it and it is computed here for standalone use.
     """
-    obs = obs_columns(source, node.cols)
-    codes, leaves = factorization if factorization is not None else leaf_codes(obs, node.cols)
-    selected = np.flatnonzero(weight_vector(node.weights, leaves) > 0)  # leaf codes with positive weight
+    cols = stream.group_by
+    obs = obs_columns(source, cols)
+    codes, leaves = factorization if factorization is not None else leaf_codes(obs, cols)
+    selected = np.flatnonzero(weight_vector(stream.weights, leaves) > 0)  # leaf codes with positive weight
     row_idx = np.flatnonzero(np.isin(codes, selected))  # ascending global rows of the selected leaves
-    reps = {key: _read_rows(source, key, row_idx) for key in node.keys}  # keyed by loc string
+    reps = {loc: _read_rows(source, loc, row_idx) for loc in stream.rep}  # keyed by loc string
     sub_obs = obs.iloc[row_idx].reset_index(drop=True)
-    order = sub_obs.sort_values(list(node.cols), kind="stable").index.to_numpy()  # contiguous runs for chunk>1
+    order = sub_obs.sort_values(list(cols), kind="stable").index.to_numpy()  # contiguous runs for chunk>1
     sub_obs, reps = sub_obs.iloc[order].reset_index(drop=True), {k: v[order] for k, v in reps.items()}
     adata = ad.AnnData(X=reps["X"], obs=sub_obs) if "X" in reps else ad.AnnData(obs=sub_obs)  # X -> n_var inferred
-    for key, v in reps.items():  # place each non-X rep so `get_from_container(adata, key)` finds it again
-        if key != "X":
-            field, sub = key.split("/", 1)  # "obsm/<k>" | "layers/<k>"
+    for loc, v in reps.items():  # place each non-X rep so `get_from_container(adata, loc)` finds it again
+        if loc != "X":
+            field, sub = loc.split("/", 1)  # "obsm/<k>" | "layers/<k>"
             getattr(adata, field)[sub] = v
     # Subset (codes, leaves) derived from the parent factorization — no re-factorize. Parent ``leaves`` are
     # string-key sorted, so the ascending distinct parent codes present in the subset already give the
@@ -240,7 +244,7 @@ def load_backed_adata(g, *, keys: Sequence[str], cols: Sequence[str] = ()) -> ad
 
 
 def open_source(src, *, keys: Sequence[str], cols: Sequence[str] = ()) -> Container:
-    """Resolve one :class:`~binded.Scheme` source value to a :data:`~binded.Container`.
+    """Resolve one :class:`~scfit.data.Stream` source value to a :data:`~scfit.data.Container`.
 
     An in-memory ``AnnData`` or ``DatasetCollection`` passes through unchanged. A single path is opened as
     zarr and auto-detected: an annbatch collection root (``encoding-type`` ``"annbatch-preshuffled"``)
