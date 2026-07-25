@@ -200,7 +200,7 @@ def _align_categoricals(frames: list[pd.DataFrame]) -> None:
             continue
         union = union_categoricals(series, ignore_order=True).categories
         for f in frames:
-            f.loc[:, col] = f[col].cat.set_categories(union)
+            f[col] = f[col].cat.set_categories(union)
 
 
 def _read_obs_cols(obs_group, cols: Sequence[str]) -> pd.DataFrame:
