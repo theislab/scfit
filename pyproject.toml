@@ -29,6 +29,9 @@ dependencies = [
   "annbatch @ git+https://github.com/selmanozleyen/annbatch.git@60c1de98156edae493d340b626877959d513ca10",
   # >=0.13 for the anndata.acc reference system (A.obsm[...] / adata[ref]) used by CouplingDataSchema.
   "anndata>=0.13",
+  # leaf (un)structuring for the scfit.registry Component specs (OmegaConf-tolerant). No pydantic/msgspec:
+  # registry is a public foundation that downstream toolboxes subclass, so keep the dep surface minimal.
+  "cattrs",
   # the one Lightning training harness (scfit.training) imports lightning eagerly.
   "lightning",
   "numpy",
