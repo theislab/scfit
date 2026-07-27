@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from . import families, registry
 
-__all__ = ["registry", "families", "nn", "data", "metrics", "training"]
+__all__ = ["registry", "families", "nn", "data", "metrics", "training", "hub"]
 
-_LAZY = frozenset({"nn", "data", "metrics", "training"})
+_LAZY = frozenset({"nn", "data", "metrics", "training", "hub"})
 
 
 def __getattr__(name: str):
