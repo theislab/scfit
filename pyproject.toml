@@ -5,7 +5,7 @@ requires = [ "hatchling" ]
 [project]
 name = "scfit"
 version = "0.0.1"
-description = "Training models with native annbatch wiring"
+description = "Component registry + annbatch-native streaming data"
 readme = "README.md"
 license = { file = "LICENSE" }
 maintainers = [
@@ -22,14 +22,41 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-  "anndata",
+  # The streaming data layer (scfit.data) ships by default. scfit.data drives annbatch's ClassSampler /
+  # BoundClassSampler; pinned to the fork by git URL (direct reference, needs allow-direct-references)
+  # until the bound-class sampler lands upstream — replace with `annbatch>=0.2.x` once it does.
+  # Immutable commit = the multi-dataset purity fix (scverse/annbatch#256).
+  "annbatch @ git+https://github.com/selmanozleyen/annbatch.git@60c1de98156edae493d340b626877959d513ca10",
+  # >=0.13 for the anndata.acc reference system (A.obsm[...] / adata[ref]) used by CouplingDataSchema.
+  "anndata>=0.13",
+  # leaf (un)structuring for the scfit.registry Component specs.
+  "cattrs",
+  "numpy",
+  "pandas",
+  "scikit-learn",
+  "scipy",
   # for debug logging (referenced from the issue template)
   "session-info2",
+  # annbatch's high-performance zarr codec pipeline (zarrs-python) for local-filesystem out-of-core reads;
+  # strongly recommended. Equivalent to annbatch's `zarrs` extra.
+  "zarrs>=0.2.1",
+]
+# GPU-resident streaming: annbatch can keep its read window on-device via cupy (preload_to_gpu) so batches
+# arrive as GPU tensors with no per-step host->device copy. Linux/CUDA only; optional at runtime.
+# CUDA 12.x only (cupy-cuda12x); add a `cuda11` extra with cupy-cuda11x if an 11.x wheel is ever needed.
+optional-dependencies.cuda12 = [
+  "cupy-cuda12x; sys_platform=='linux'",
+]
+# torch is the one optional part of the data stack: scfit.data imports it lazily, only when the loader is
+# asked to emit torch tensors (Loader(..., to="torch")). The default is to=None (no conversion, no torch),
+# so install `scfit[torch]` only when you want torch/GPU batches.
+optional-dependencies.torch = [
+  "torch>=2",
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://scfit.readthedocs.io/"
-urls.Homepage = "https://github.com/selmanozleyen/scfit"
-urls.Source = "https://github.com/selmanozleyen/scfit"
+urls.Homepage = "https://github.com/theislab/scfit"
+urls.Source = "https://github.com/theislab/scfit"
 
 [dependency-groups]
 dev = [
@@ -58,12 +85,17 @@ doc = [
 ]
 
 [tool.hatch]
+# Allow the immutable binded git dependency (PEP 508 direct reference).
+metadata.allow-direct-references = true
 envs.default.installer = "uv"
 envs.default.dependency-groups = [ "dev" ]
 envs.docs.scripts.build = "sphinx-build -M html docs docs/_build -W {args}"
 envs.docs.scripts.clean = "git clean -fdX -- {args:docs}"
 envs.docs.scripts.open = "python -m webbrowser -t docs/_build/html/index.html"
 envs.docs.dependency-groups = [ "doc" ]
+# data deps ship by default now; the loader test helpers exercise the to="torch" path, so pull the one
+# optional extra (torch) into the test env.
+envs.hatch-test.features = [ "torch" ]
 envs.hatch-test.matrix = [
   # Test the lowest and highest supported Python versions with normal deps
   { deps = [ "stable" ], python = [ "3.12", "3.14" ] },
@@ -116,11 +148,13 @@ lint.per-file-ignores."tests/*" = [ "D" ]
 lint.pydocstyle.convention = "numpy"
 
 [tool.pytest]
-addopts = [
+ini_options.testpaths = [ "tests" ]
+ini_options.pythonpath = [ "tests/data" ]  # scheme_helpers.py: shared test helper imported bare by test_split.py
+ini_options.addopts = [
   "--import-mode=importlib", # allow using test files with same name
+  "--strict-markers",
+  "--strict-config",
 ]
-strict = true
-testpaths = [ "tests" ]
 
 [tool.coverage]
 run.omit = [
