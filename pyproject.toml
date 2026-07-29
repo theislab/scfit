@@ -5,7 +5,7 @@ requires = [ "hatchling" ]
 [project]
 name = "scfit"
 version = "0.0.1"
-description = "Training models with native annbatch wiring"
+description = "Component registry + annbatch-native streaming data (scfit family-neutral core)"
 readme = "README.md"
 license = { file = "LICENSE" }
 maintainers = [
@@ -25,14 +25,9 @@ dependencies = [
   # leaf (un)structuring for the scfit.registry Component specs (OmegaConf-tolerant). No pydantic/msgspec:
   # registry is a public foundation that downstream toolboxes subclass, so keep the dep surface minimal.
   "cattrs",
-  # the one Lightning training harness (scfit.training) imports lightning eagerly.
-  "lightning",
   "numpy",
-  "safetensors",
   # for debug logging (referenced from the issue template)
   "session-info2",
-  # torch is a base dep: nn / training / metrics / hub use it. The streaming DATA stack is a `[data]` extra.
-  "torch>=2",
 ]
 # GPU-resident streaming: annbatch can keep its read window on-device via cupy (preload_to_gpu) so batches
 # arrive as GPU tensors with no per-step host->device copy. Linux/CUDA only; optional at runtime.
@@ -40,9 +35,9 @@ optional-dependencies.cuda = [
   "cupy-cuda12x; sys_platform=='linux'",
 ]
 # The streaming data layer (scfit.data, the absorbed binded loader) and its heavy stack are OPTIONAL: the
-# core — scfit.{registry,nn,training,metrics,hub} — imports none of it, so a consumer that only wants the
-# training/registry core (e.g. a flow toolbox depending on scfit) installs `scfit` WITHOUT dragging a git-
-# forked annbatch, zarrs, anndata, or pandas. Install `scfit[data]` to get the out-of-core loaders.
+# core — scfit.registry — imports none of it, so a consumer that only wants the component registry installs
+# `scfit` WITHOUT dragging a git-forked annbatch, zarrs, anndata, pandas, or torch. Install `scfit[data]`
+# to get the out-of-core loaders.
 optional-dependencies.data = [
   # scfit.data drives annbatch's ClassSampler / BoundClassSampler. Pinned to the fork by git URL (direct
   # reference) until the bound-class sampler lands upstream — replace with `annbatch>=0.2.x` once it does.
@@ -53,6 +48,9 @@ optional-dependencies.data = [
   "pandas",
   "scikit-learn",
   "scipy",
+  # the loader converts batches to torch tensors by default (Loader(..., to="torch")); torch is imported
+  # lazily on that path, so it belongs to the data stack, not the core.
+  "torch>=2",
   # annbatch's high-performance zarr codec pipeline (zarrs-python) for local-filesystem out-of-core reads;
   # strongly recommended. Installing the wheel here is equivalent to annbatch's `zarrs` extra.
   "zarrs>=0.2.1",

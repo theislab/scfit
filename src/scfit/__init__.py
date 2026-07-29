@@ -1,17 +1,17 @@
-"""scfit — the family-neutral core (registry, families, training, data, metrics).
+"""scfit — the family-neutral core (registry + streaming data).
 
-``import scfit`` stays light and **torch-free**: only ``registry`` (cattrs) and ``families`` (stdlib) load
-eagerly, so ``scfit.families.available_families()`` never drags in torch. ``data`` / ``metrics`` / ``training``
-(which import torch/lightning) load lazily on first attribute access or explicit submodule import.
+``import scfit`` stays light and **torch-free**: only ``registry`` (cattrs) loads eagerly. ``data`` (the
+annbatch streaming stack, ``scfit[data]``) loads lazily on first attribute access or explicit submodule
+import, so a consumer that only wants the component registry never drags in the data deps.
 """
 
 from __future__ import annotations
 
-from . import families, registry
+from . import registry
 
-__all__ = ["registry", "families", "nn", "data", "metrics", "training", "hub"]
+__all__ = ["registry", "data"]
 
-_LAZY = frozenset({"nn", "data", "metrics", "training", "hub"})
+_LAZY = frozenset({"data"})
 
 
 def __getattr__(name: str):
