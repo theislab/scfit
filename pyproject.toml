@@ -47,9 +47,9 @@ dependencies = [
 optional-dependencies.cuda12 = [
   "cupy-cuda12x; sys_platform=='linux'",
 ]
-# torch is the one optional part of the data stack: scfit.data imports it lazily, only for the loader's
-# default torch-tensor conversion (Loader(..., to="torch")). Install `scfit[torch]` for torch/GPU batches;
-# without it the loader still works with to="numpy" / to=None.
+# torch is the one optional part of the data stack: scfit.data imports it lazily, only when the loader is
+# asked to emit torch tensors (Loader(..., to="torch")). The default is to=None (no conversion, no torch),
+# so install `scfit[torch]` only when you want torch/GPU batches.
 optional-dependencies.torch = [
   "torch>=2",
 ]
@@ -93,8 +93,8 @@ envs.docs.scripts.build = "sphinx-build -M html docs docs/_build -W {args}"
 envs.docs.scripts.clean = "git clean -fdX -- {args:docs}"
 envs.docs.scripts.open = "python -m webbrowser -t docs/_build/html/index.html"
 envs.docs.dependency-groups = [ "doc" ]
-# data deps ship by default now; torch is the one optional extra the loader suite needs (its default
-# to="torch" conversion), so pull it into the test env.
+# data deps ship by default now; the loader test helpers exercise the to="torch" path, so pull the one
+# optional extra (torch) into the test env.
 envs.hatch-test.features = [ "torch" ]
 envs.hatch-test.matrix = [
   # Test the lowest and highest supported Python versions with normal deps

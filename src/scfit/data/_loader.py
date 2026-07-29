@@ -49,7 +49,7 @@ class Loader:
         links: Mapping[str, Stream] | None = None,
         *,
         seed: int = 0,
-        to: str | None = "torch",
+        to: str | None = None,
         preload_to_gpu: bool = False,
         **sampler: Unpack[SamplerKwargs],
     ) -> None:
