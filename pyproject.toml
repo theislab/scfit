@@ -22,11 +22,24 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
+  # The streaming data layer (scfit.data) ships by default. scfit.data drives annbatch's ClassSampler /
+  # BoundClassSampler; pinned to the fork by git URL (direct reference, needs allow-direct-references)
+  # until the bound-class sampler lands upstream — replace with `annbatch>=0.2.x` once it does.
+  # Immutable commit = the multi-dataset purity fix (scverse/annbatch#256).
+  "annbatch @ git+https://github.com/selmanozleyen/annbatch.git@60c1de98156edae493d340b626877959d513ca10",
+  # >=0.13 for the anndata.acc reference system (A.obsm[...] / adata[ref]) used by CouplingDataSchema.
+  "anndata>=0.13",
   # leaf (un)structuring for the scfit.registry Component specs.
   "cattrs",
   "numpy",
+  "pandas",
+  "scikit-learn",
+  "scipy",
   # for debug logging (referenced from the issue template)
   "session-info2",
+  # annbatch's high-performance zarr codec pipeline (zarrs-python) for local-filesystem out-of-core reads;
+  # strongly recommended. Equivalent to annbatch's `zarrs` extra.
+  "zarrs>=0.2.1",
 ]
 # GPU-resident streaming: annbatch can keep its read window on-device via cupy (preload_to_gpu) so batches
 # arrive as GPU tensors with no per-step host->device copy. Linux/CUDA only; optional at runtime.
@@ -34,26 +47,11 @@ dependencies = [
 optional-dependencies.cuda12 = [
   "cupy-cuda12x; sys_platform=='linux'",
 ]
-# The streaming data layer (scfit.data, the absorbed binded loader) and its heavy stack are OPTIONAL: the
-# core — scfit.registry — imports none of it, so a consumer that only wants the component registry installs
-# `scfit` WITHOUT dragging a git-forked annbatch, zarrs, anndata, pandas, or torch. Install `scfit[data]`
-# to get the out-of-core loaders.
-optional-dependencies.data = [
-  # scfit.data drives annbatch's ClassSampler / BoundClassSampler. Pinned to the fork by git URL (direct
-  # reference) until the bound-class sampler lands upstream — replace with `annbatch>=0.2.x` once it does.
-  # Immutable commit = the multi-dataset purity fix (scverse/annbatch#256). Requires allow-direct-references.
-  "annbatch @ git+https://github.com/selmanozleyen/annbatch.git@60c1de98156edae493d340b626877959d513ca10",
-  # >=0.13 for the anndata.acc reference system (A.obsm[...] / adata[ref]) used by CouplingDataSchema.
-  "anndata>=0.13",
-  "pandas",
-  "scikit-learn",
-  "scipy",
-  # the loader converts batches to torch tensors by default (Loader(..., to="torch")); torch is imported
-  # lazily on that path, so it belongs to the data stack, not the core.
+# torch is the one optional part of the data stack: scfit.data imports it lazily, only for the loader's
+# default torch-tensor conversion (Loader(..., to="torch")). Install `scfit[torch]` for torch/GPU batches;
+# without it the loader still works with to="numpy" / to=None.
+optional-dependencies.torch = [
   "torch>=2",
-  # annbatch's high-performance zarr codec pipeline (zarrs-python) for local-filesystem out-of-core reads;
-  # strongly recommended. Installing the wheel here is equivalent to annbatch's `zarrs` extra.
-  "zarrs>=0.2.1",
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://scfit.readthedocs.io/"
@@ -95,9 +93,9 @@ envs.docs.scripts.build = "sphinx-build -M html docs docs/_build -W {args}"
 envs.docs.scripts.clean = "git clean -fdX -- {args:docs}"
 envs.docs.scripts.open = "python -m webbrowser -t docs/_build/html/index.html"
 envs.docs.dependency-groups = [ "doc" ]
-# The streaming data stack is an optional extra (see optional-dependencies.data); install it in the test env
-# so the scfit.data suite keeps its annbatch/anndata/zarrs deps while the core install stays light.
-envs.hatch-test.features = [ "data" ]
+# data deps ship by default now; torch is the one optional extra the loader suite needs (its default
+# to="torch" conversion), so pull it into the test env.
+envs.hatch-test.features = [ "torch" ]
 envs.hatch-test.matrix = [
   # Test the lowest and highest supported Python versions with normal deps
   { deps = [ "stable" ], python = [ "3.12", "3.14" ] },
