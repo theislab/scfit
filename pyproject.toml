@@ -5,7 +5,7 @@ requires = [ "hatchling" ]
 [project]
 name = "scfit"
 version = "0.0.1"
-description = "Component registry + annbatch-native streaming data (scfit family-neutral core)"
+description = "Component registry + annbatch-native streaming data"
 readme = "README.md"
 license = { file = "LICENSE" }
 maintainers = [
@@ -22,8 +22,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-  # leaf (un)structuring for the scfit.registry Component specs (OmegaConf-tolerant). No pydantic/msgspec:
-  # registry is a public foundation that downstream toolboxes subclass, so keep the dep surface minimal.
+  # leaf (un)structuring for the scfit.registry Component specs.
   "cattrs",
   "numpy",
   # for debug logging (referenced from the issue template)
@@ -31,7 +30,8 @@ dependencies = [
 ]
 # GPU-resident streaming: annbatch can keep its read window on-device via cupy (preload_to_gpu) so batches
 # arrive as GPU tensors with no per-step host->device copy. Linux/CUDA only; optional at runtime.
-optional-dependencies.cuda = [
+# CUDA 12.x only (cupy-cuda12x); add a `cuda11` extra with cupy-cuda11x if an 11.x wheel is ever needed.
+optional-dependencies.cuda12 = [
   "cupy-cuda12x; sys_platform=='linux'",
 ]
 # The streaming data layer (scfit.data, the absorbed binded loader) and its heavy stack are OPTIONAL: the
