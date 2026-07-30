@@ -21,8 +21,10 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 from annbatch import Loader as AnnbatchLoader  # annbatch's low-level per-rep loader (not scfit's `Loader`)
-from annbatch.samplers import BoundClassSampler, ClassSampler
 
+# ClassSampler/BoundClassSampler + the loader's `label`/#256 behaviour are fork-only; the shim vendors them
+# over stock annbatch==0.2.1 (and patches AnnbatchLoader.__iter__ on import) so scfit stays PyPI-publishable.
+from scfit.data._annbatch_shim import BoundClassSampler, ClassSampler
 from scfit.data._io import get_from_container, is_backed_array, leaf_codes, materialize_node, obs_columns, open_source
 from scfit.data._schema import _SAMPLER_KEYS, Container, SamplerKwargs, Stream, _check_sampler, weight_vector
 
