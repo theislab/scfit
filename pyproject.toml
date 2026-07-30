@@ -1,10 +1,9 @@
 [build-system]
 build-backend = "hatchling.build"
-requires = [ "hatchling" ]
+requires = [ "hatchling", "hatch-vcs" ]
 
 [project]
 name = "scfit"
-version = "0.0.1"
 description = "Component registry + annbatch-native streaming data"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -21,6 +20,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
 ]
+dynamic = [ "version" ]
 dependencies = [
   # The streaming data layer (scfit.data) ships by default. It needs annbatch's ClassSampler plus three
   # fork-only bits — BoundClassSampler, the per-batch `label`, and the #256 multi-dataset purity fix. The
@@ -87,6 +87,8 @@ doc = [
 ]
 
 [tool.hatch]
+# Version comes from the git tag (hatch-vcs); `[project] version` is intentionally absent.
+version.source = "vcs"
 envs.default.installer = "uv"
 envs.default.dependency-groups = [ "dev" ]
 envs.docs.scripts.build = "sphinx-build -M html docs docs/_build -W {args}"
