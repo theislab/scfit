@@ -99,9 +99,14 @@ class Source:
         sub._leaf_cache[tuple(stream.group_by)] = _Factorized(codes, leaves, cats)
         return sub
 
-    def clear_cache(self) -> None:
-        """Drop the factorization cache (the codes are redundant once a Loader has built its samplers)."""
-        self._leaf_cache = {}
+    def __getstate__(self) -> dict:
+        """Pickle without the factorization cache — the per-cell ``codes`` are large and rebuildable.
+
+        Only the serialized copy drops it (the live object keeps its cache), so a checkpointed
+        :class:`~scfit.data.Loader` doesn't carry each source's ``codes`` array; :meth:`factorize`
+        recomputes on demand — which resume never needs, since it replays from the samplers.
+        """
+        return {**self.__dict__, "_leaf_cache": {}}
 
 
 def build_sources(sources: Mapping[str, Container]) -> dict[str, Source]:

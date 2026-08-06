@@ -22,6 +22,7 @@ def test_pickle_mid_stream_and_resume_deterministic():
 
     # two loaders restored from the same checkpoint must produce identical streams
     la, lb = pickle.loads(blob), pickle.loads(blob)
+    assert all(not s._leaf_cache for s in la._sources.values())  # Source.__getstate__ dropped rebuildable codes
     a = [next(la)["primary"]["X"] for _ in range(4)]  # target = the primary stream, keyed by name → rep loc
     b = [next(lb)["primary"]["X"] for _ in range(4)]
     assert all(np.array_equal(x, y) for x, y in zip(a, b, strict=True))
