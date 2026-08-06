@@ -21,7 +21,7 @@ from scfit.data import Loader, Stream
 COLS = ("cell_line", "drug")
 
 
-def _primary_only(adata, weights, *, batch_size=8, chunk_size=1, preload_nchunks=8) -> Loader:
+def _primary_only(adata, weights, *, batch_size=8, chunk_size=1, preload_nchunks=8, n_iters=None) -> Loader:
     return Loader(
         {KEY: adata},
         primary=Stream(KEY, group_by=COLS, weights=weights),
@@ -29,6 +29,7 @@ def _primary_only(adata, weights, *, batch_size=8, chunk_size=1, preload_nchunks
         batch_size=batch_size,
         chunk_size=chunk_size,
         preload_nchunks=preload_nchunks,
+        n_iters=n_iters,
     )
 
 
@@ -37,9 +38,20 @@ def test_epoch_length_is_primary_obs_over_batch_size():
     adata = encoded_adata(("A", "B"), ("d1", "d2", "d3"), n_per_combo=16)
     weights = uniform([(cl, dr) for cl in ("A", "B") for dr in ("d1", "d2", "d3")])
     loader = _primary_only(adata, weights)
-    assert loader._n_batches == 96 // 8
-    list(islice(loader, loader._n_batches))  # consume exactly one pass
-    assert loader._pos == loader._n_batches  # the pass boundary is real; the next __next__ starts fresh
+    assert loader.epoch_len == 96 // 8 and loader.n_iters is None  # derived pass length; infinite by default
+    with pytest.raises(TypeError):
+        len(loader)  # infinite (n_iters=None) → unsized
+    first_pass = list(islice(loader, loader.epoch_len))  # one pass worth of batches
+    assert len(first_pass) == loader.epoch_len
+
+
+def test_n_iters_makes_the_loader_finite():
+    # n_iters caps the loader: it yields exactly that many batches, then StopIteration (list terminates).
+    adata = encoded_adata(("A", "B"), ("d1", "d2", "d3"), n_per_combo=16)
+    weights = uniform([(cl, dr) for cl in ("A", "B") for dr in ("d1", "d2", "d3")])
+    loader = _primary_only(adata, weights, n_iters=5)
+    assert loader.n_iters == 5 and len(loader) == 5  # finite → has a length
+    assert len(list(loader)) == 5  # and it really yields exactly that many, then stops
 
 
 def test_chunk_run_length_error_names_the_stream():

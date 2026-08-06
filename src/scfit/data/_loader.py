@@ -55,9 +55,12 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
+        n_iters: int | None = None,
         **sampler_kwargs: Unpack[SamplerKwargs],
     ) -> None:
         _check_sampler(sampler_kwargs, "Loader")
+        if n_iters is not None and n_iters < 1:
+            raise ValueError(f"n_iters must be a positive integer or None (got {n_iters!r}).")
         links = dict(links or {})
         validate_links(primary, links)
         self._streams: dict[str, Stream] = {_PRIMARY: primary, **links}
@@ -111,10 +114,14 @@ class Loader:
             self._st[name] = {"leaves": f.leaves, "w": weight_vector(s.weights, f.leaves), "cats": f.cats}
         self._validate_label_lookups()  # strict: a stream's label_lookup must cover its positive-weight leaves
 
-        # A natural epoch over the primary: its cell count // the primary's batch_size. The primary drives the
-        # zip, so every stream draws the same number of batches (its own batch_size ⇒ its own row count).
+        # A natural epoch over the primary: its cell count // the primary's batch_size — the default pass
+        # length. The primary drives the zip, so every stream draws the same number of batches (its own
+        # batch_size ⇒ its own row count). ``n_iters`` overrides it: a finite loader yields exactly
+        # ``n_iters`` batches then stops; ``None`` ⇒ infinite, auto-rolling a fresh epoch each pass.
         n_root_obs = len(self._st[_PRIMARY]["cats"])
-        self._n_batches = max(1, n_root_obs // self._root_batch_size)
+        self.epoch_len = max(1, n_root_obs // self._root_batch_size)
+        self.n_iters = n_iters
+        self._pass_len = n_iters if n_iters is not None else self.epoch_len
 
         # Oracle template: deepcopied into the primary's loader and each link's inner, so their per-batch class
         # draws agree. All of a stream's reps share the stream's rng, so the (identical) samplers select the
@@ -143,6 +150,7 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
+        n_iters: int | None = None,
         **sampler_kwargs: Unpack[SamplerKwargs],
     ) -> Loader:
         """Build a :class:`Loader` from zarr ``{source_key: path | [paths]}``, opened backed.
@@ -163,7 +171,14 @@ class Loader:
             for k, p in dict(paths).items()
         }
         return cls(
-            sources, primary=primary, links=links, seed=seed, to=to, preload_to_gpu=preload_to_gpu, **sampler_kwargs
+            sources,
+            primary=primary,
+            links=links,
+            seed=seed,
+            to=to,
+            preload_to_gpu=preload_to_gpu,
+            n_iters=n_iters,
+            **sampler_kwargs,
         )
 
     def _new_class_sampler(self, name: str) -> ClassSampler:
@@ -174,7 +189,7 @@ class Loader:
                 preload_nchunks=cfg["preload_nchunks"],
                 batch_size=cfg["batch_size"],
                 classes=self._st[name]["cats"],
-                num_samples=self._n_batches * cfg["batch_size"],
+                num_samples=self._pass_len * cfg["batch_size"],
                 class_weights=self._st[name]["w"],
                 drop_last=True,
                 rng=deepcopy(self._rngs[name]),
@@ -250,6 +265,12 @@ class Loader:
     def __iter__(self) -> Loader:
         return self
 
+    def __len__(self) -> int:
+        """The finite batch count ``n_iters``; an infinite loader (``n_iters is None``) has no length."""
+        if self.n_iters is None:
+            raise TypeError("infinite Loader has no len() — set n_iters for a finite loader.")
+        return self.n_iters
+
     def _stream_next(self, name: str) -> tuple[dict, object]:
         """A stream's aligned reps ``{rep loc: rows}`` plus its per-batch ``label`` (category label).
 
@@ -267,9 +288,12 @@ class Loader:
         return leaf if name == _PRIMARY else leaf[len(self._streams[name].match_on) :]
 
     def __next__(self) -> dict[str, dict]:
-        if self._iters is None or self._pos >= self._n_batches:
+        if self.n_iters is not None and self._pos >= self.n_iters:
+            raise StopIteration  # finite loader: exactly n_iters batches, then done
+        if self._iters is None or (self.n_iters is None and self._pos >= self._pass_len):
             # Start a fresh pass (first pass, next epoch, or resume after unpickling): (re)build one iterator
             # per stream/rep from the (advancing) sampler RNG, so each pass is a fresh reproducible epoch.
+            # A finite loader (n_iters set) builds one pass of n_iters batches and never rolls.
             self._iters = {
                 name: {loc: iter(ld) for loc, ld in loaders.items()} for name, loaders in self._loaders.items()
             }
