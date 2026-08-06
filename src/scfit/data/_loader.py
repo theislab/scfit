@@ -68,8 +68,6 @@ class Loader:
         self._preload_to_gpu = preload_to_gpu
         self._to = to  # loader-global backend for every stream's per-rep annbatch loaders
 
-        # Each source_key resolves to one Source (a dataset + its factorization cache); streams naming the
-        # same key share it (factorized once). A stream naming several keys reads a unified Source over them.
         self._sources: dict[str, Source] = build_sources(sources)
         for name, s in self._streams.items():
             for k in s.source_keys:
@@ -92,17 +90,15 @@ class Loader:
             self._cfg[name] = eff
         self._root_batch_size = self._cfg[_PRIMARY]["batch_size"]
 
-        # One independent sub-generator per stream (spawned off ``default_rng(seed)``); the samplers deepcopy
-        # these rather than advance them, so a stream's oracle/target/link samplers all start from the identical
-        # state and stay in lockstep, and the whole stream is reproducible from the seed.
+        # One RNG per stream, spawned off default_rng(seed). Samplers deepcopy (never advance) these, so a
+        # stream's oracle/target/link samplers start identical, stay in lockstep, and are seed-reproducible.
         rng = np.random.default_rng(seed)
         self._rngs: dict[str, np.random.Generator] = dict(
             zip(sorted(self._streams), rng.spawn(len(self._streams)), strict=True)
         )
 
-        # Per stream: resolve its Source (materializing an in_memory stream into RAM) and pull that source's
-        # tuple-labelled categorical / weight vector / leaf list (obs only — no cell matrices). The Source
-        # factorizes each ``(source_key, group_by)`` once, so streams sharing a key reuse it.
+        # Per stream: resolve its Source (materializing an in_memory stream), then pull its categorical /
+        # weights / leaves from obs alone — no cell matrices. Sources sharing a key factorize once.
         self._union_cache: dict[tuple[str, ...], Source] = {}
         self._resolved: dict[str, Source] = {}
         self._st: dict[str, dict] = {}
@@ -112,20 +108,16 @@ class Loader:
             f = src.factorize(s.group_by)
             self._resolved[name] = src
             self._st[name] = {"leaves": f.leaves, "w": weight_vector(s.weights, f.leaves), "cats": f.cats}
-        self._validate_label_lookups()  # strict: a stream's label_lookup must cover its positive-weight leaves
+        self._validate_label_lookups()
 
-        # A natural epoch over the primary: its cell count // the primary's batch_size — the default pass
-        # length. The primary drives the zip, so every stream draws the same number of batches (its own
-        # batch_size ⇒ its own row count). ``n_iters`` overrides it: a finite loader yields exactly
-        # ``n_iters`` batches then stops; ``None`` ⇒ infinite, auto-rolling a fresh epoch each pass.
+        # Default pass length: primary rows // its batch_size. ``n_iters`` overrides it — a finite loader
+        # yields exactly n_iters batches then stops; None ⇒ infinite, rolling a fresh epoch each pass.
         n_root_obs = len(self._st[_PRIMARY]["cats"])
         self.epoch_len = max(1, n_root_obs // self._root_batch_size)
         self.n_iters = n_iters
         self._pass_len = n_iters if n_iters is not None else self.epoch_len
 
-        # Oracle template: deepcopied into the primary's loader and each link's inner, so their per-batch class
-        # draws agree. All of a stream's reps share the stream's rng, so the (identical) samplers select the
-        # same rows every batch — a stream's reps are aligned (same cells).
+        # The primary's sampler is the oracle; the primary's reps and each link's inner all deepcopy it.
         self._oracle_sampler = self._new_class_sampler(_PRIMARY)
         self._loaders: dict[str, dict[str, AnnbatchLoader]] = {
             _PRIMARY: self._build_per_rep_loaders(_PRIMARY, deepcopy(self._oracle_sampler))
@@ -198,9 +190,8 @@ class Loader:
             raise ValueError(f"stream {name!r}: {e}") from e
 
     def _new_bound_sampler(self, name: str) -> BoundClassSampler:
-        # Inner = a copy of the oracle, so the link draws the same per-batch schedule. Match on the shared
-        # ``match_on`` columns; the link's leaf weights (0 for excluded leaves) go in as the *secondary*
-        # ``classes`` so only positive-weight link leaves are drawn within each matched context.
+        # Inner = a deepcopy of the oracle (same per-batch schedule). Bind on the shared ``match_on`` columns;
+        # the link's own weights (0 = excluded) pick which of its leaves is drawn within each matched context.
         cfg, cats = self._cfg[name], self._st[name]["cats"]
         primary, link = self._streams[_PRIMARY], self._streams[name]
         try:
@@ -220,7 +211,7 @@ class Loader:
             raise ValueError(f"stream {name!r}: {e}") from e
 
     def _build_per_rep_loaders(self, name: str, sampler: ClassSampler | BoundClassSampler) -> dict[str, AnnbatchLoader]:
-        # one annbatch Loader per rep of the stream, keyed by rep loc; all deepcopy the same sampler.
+        # One annbatch Loader per rep; each deepcopies the sampler so the reps stay aligned.
         src, s, to = self._resolved[name], self._streams[name], self._to
         loaders: dict[str, AnnbatchLoader] = {}
         for loc in s.reps:
@@ -250,8 +241,7 @@ class Loader:
     def __getstate__(self) -> dict[str, object]:
         """Pickle without the live annbatch iterators (generators aren't picklable).
 
-        Every sampler's RNG state is kept, so a reloaded loader resumes the same reproducible stream (the
-        next pass) on the next ``__next__``; ``_iters`` is dropped and rebuilt from the restored samplers.
+        The sampler RNG state is kept, so the next ``__next__`` rebuilds a fresh pass resuming the same stream.
         """
         state = self.__dict__.copy()
         state["_iters"] = None
@@ -291,9 +281,8 @@ class Loader:
         if self.n_iters is not None and self._pos >= self.n_iters:
             raise StopIteration  # finite loader: exactly n_iters batches, then done
         if self._iters is None or (self.n_iters is None and self._pos >= self._pass_len):
-            # Start a fresh pass (first pass, next epoch, or resume after unpickling): (re)build one iterator
-            # per stream/rep from the (advancing) sampler RNG, so each pass is a fresh reproducible epoch.
-            # A finite loader (n_iters set) builds one pass of n_iters batches and never rolls.
+            # (Re)build one iterator per stream/rep from the advancing sampler RNG — a fresh reproducible
+            # epoch (first pass, next epoch, or resume after unpickling). A finite loader builds it once.
             self._iters = {
                 name: {loc: iter(ld) for loc, ld in loaders.items()} for name, loaders in self._loaders.items()
             }
