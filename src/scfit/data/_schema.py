@@ -2,12 +2,11 @@ r"""Public data spec: the :class:`Stream` consumed by :class:`~scfit.data.Loader
 
 Everything is a :class:`Stream` — one streamed population over a source, described by the columns it
 groups on, the representation(s) it reads, its per-group weights, an optional per-group array lookup, and
-(for a matched *link*) the columns it shares with the primary. There is no separate node / bind / scheme
-object: the loader takes one primary :class:`Stream` plus any number of named linked :class:`Stream`\\s
+(for a matched *link*) the columns it shares with the primary. The loader takes one primary :class:`Stream` plus any number of named linked :class:`Stream`\\s
 and wires them into annbatch samplers directly.
 
 A Stream partitions its source's cells into **leaves** (unique combinations of ``group_by``) with a
-per-combination :data:`Weights` mapping. A weight of 0 (or a combination absent from the mapping) is
+per-combination :data:`Weights` mapping. A weight of 0 (or an absent combination) is
 *excluded* — that IS the selection, native to annbatch's ``ClassSampler``. ``weights=None`` is uniform
 over every group. See ``README.md`` for the model and the cellflow / sc-flow-tools mapping.
 """
