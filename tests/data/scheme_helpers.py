@@ -33,6 +33,9 @@ LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2", "d3")
 CONTROL = "control"
 
+#: The shared ``source_key`` the perturbation streams (primary + matched control) both name — one dataset.
+KEY = "pert"
+
 #: Column indices of the identity encoding produced by :func:`encoded_adata`.
 LINE, DRUG, IS_CONTROL, ROW_ID = 0, 1, 2, 3
 
@@ -171,9 +174,9 @@ def perturbation_streams(
 
     pert = [c for c in combos if not is_control(c)]
     ctrl = [c for c in combos if is_control(c)]
-    primary = Stream(source, group_by=cols, rep=rep, weights=uniform(pert), label_lookup=label_lookup)
+    primary = Stream(KEY, group_by=cols, reps=rep, weights=uniform(pert), label_lookup=label_lookup)
     control = Stream(
-        source, group_by=cols, rep=ctrl_rep, weights=uniform(ctrl), match_on=match_on, in_memory=ctrl_in_memory
+        KEY, group_by=cols, reps=ctrl_rep, weights=uniform(ctrl), match_on=match_on, in_memory=ctrl_in_memory
     )
     return primary, {"ctrl": control}
 
@@ -192,8 +195,9 @@ def perturbation_loader(
     """A :class:`~scfit.data.Loader` over :func:`perturbation_streams` with the given read parameters."""
     primary, links = perturbation_streams(source, **stream_kwargs)
     return Loader(
-        primary,
-        links,
+        {KEY: source},
+        primary=primary,
+        links=links,
         seed=seed,
         batch_size=batch_size,
         chunk_size=chunk_size,

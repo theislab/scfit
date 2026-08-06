@@ -14,7 +14,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
-from scheme_helpers import encoded_adata, only_leaf, rep, uniform
+from scheme_helpers import KEY, encoded_adata, only_leaf, rep, uniform
 
 from scfit.data import Loader, Stream
 
@@ -23,7 +23,8 @@ COLS = ("cell_line", "drug")
 
 def _primary_only(adata, weights, *, batch_size=8, chunk_size=1, preload_nchunks=8) -> Loader:
     return Loader(
-        Stream(adata, group_by=COLS, weights=weights),
+        {KEY: adata},
+        primary=Stream(KEY, group_by=COLS, weights=weights),
         seed=0,
         batch_size=batch_size,
         chunk_size=chunk_size,

@@ -12,7 +12,7 @@ the same rows, and a pickled loader resumes the same stream.
 Streams address their data by ``source_key`` into the ``sources`` mapping; each key resolves to one
 :class:`~scfit.data.Source`, which owns that dataset's obs factorization (shared by every stream naming the
 key). :meth:`Loader.from_paths` opens zarr path(s) backed — reading only the reps + cols the streams use —
-and builds that mapping. See ``README.md``.
+and builds that mapping.
 """
 
 from __future__ import annotations
@@ -177,7 +177,9 @@ class Loader:
             k: open_source(p, keys=sorted(reps.get(k, ())), cols=sorted(cols.get(k, ())))
             for k, p in dict(paths).items()
         }
-        return cls(sources, primary=primary, links=links, seed=seed, to=to, preload_to_gpu=preload_to_gpu, **sampler_kwargs)
+        return cls(
+            sources, primary=primary, links=links, seed=seed, to=to, preload_to_gpu=preload_to_gpu, **sampler_kwargs
+        )
 
     def _new_class_sampler(self, name: str) -> ClassSampler:
         cfg = self._cfg[name]

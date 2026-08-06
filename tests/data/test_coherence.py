@@ -15,6 +15,7 @@ from scheme_helpers import (
     CONTROL,
     DRUGS,
     IS_CONTROL,
+    KEY,
     LINES,
     ROW_ID,
     codes,
@@ -27,7 +28,7 @@ from scheme_helpers import (
     uniform,
 )
 
-from scfit.data import Loader, Stream
+from scfit.data import Loader, Source, Stream
 
 COLS = ("cell_line", "drug")
 
@@ -86,12 +87,13 @@ def test_multiple_links_are_keyed_by_name():
     x = np.stack([obs["line"].map(lc), obs["drug"].map(dc)], axis=1).astype("float32")  # [line code, drug code]
     adata = ad.AnnData(x, obs=obs)
     loader = Loader(
-        Stream(
-            adata, group_by=("line", "drug"), weights=uniform([(ln, dr) for ln in ("A", "B") for dr in ("d1", "d2")])
+        {KEY: adata},
+        primary=Stream(
+            KEY, group_by=("line", "drug"), weights=uniform([(ln, dr) for ln in ("A", "B") for dr in ("d1", "d2")])
         ),
         links={
-            "on_line": Stream(adata, group_by=("line",), match_on=("line",), weights=uniform([("A",), ("B",)])),
-            "on_drug": Stream(adata, group_by=("drug",), match_on=("drug",), weights=uniform([("d1",), ("d2",)])),
+            "on_line": Stream(KEY, group_by=("line",), match_on=("line",), weights=uniform([("A",), ("B",)])),
+            "on_drug": Stream(KEY, group_by=("drug",), match_on=("drug",), weights=uniform([("d1",), ("d2",)])),
         },
         batch_size=8,
         chunk_size=1,
@@ -123,10 +125,11 @@ def test_per_stream_batch_sizes_differ():
     pert = uniform([(cl, dr) for cl in LINES for dr in DRUGS if dr != CONTROL])
     ctrl = uniform([(cl, CONTROL) for cl in LINES])
     loader = Loader(
-        Stream(adata, group_by=COLS, weights=pert),
+        {KEY: adata},
+        primary=Stream(KEY, group_by=COLS, weights=pert),
         links={
             "ctrl": Stream(
-                adata,
+                KEY,
                 group_by=COLS,
                 match_on=("cell_line",),
                 weights=ctrl,
@@ -163,6 +166,8 @@ def test_in_memory_control_materialized():
     loader = perturbation_loader(
         encoded_adata(LINES, DRUGS, 16), ctrl_in_memory=True, label_lookup=perturbation_labels()
     )
-    assert isinstance(loader._resolved["ctrl"], ad.AnnData)  # control materialized into RAM
+    materialized = loader._resolved["ctrl"]  # control materialized into a RAM-backed Source
+    assert isinstance(materialized, Source)
+    assert isinstance(materialized.adatas[0].X, np.ndarray)  # dense, in-memory (not a backing)
     b = next(iter(loader))
     assert (rep(b, "ctrl")[:, IS_CONTROL] == 1.0).all()  # served from memory, still matched controls

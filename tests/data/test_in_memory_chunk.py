@@ -14,6 +14,8 @@ import pandas as pd
 import pytest
 from scheme_helpers import LINES, perturbation_loader
 
+from scfit.data import Source
+
 COLS = ("cell_line", "drug")
 
 
@@ -39,7 +41,8 @@ def test_in_memory_control_at_chunk_one_builds_despite_short_runs():
     # that raises annbatch's run-length error when the same stream is streamed (see the test below).
     loader = perturbation_loader(_source(), ctrl_in_memory=True, batch_size=8, chunk_size=1, preload_nchunks=8)
     assert loader._cfg["ctrl"].chunk_size == 1
-    assert isinstance(loader._resolved["ctrl"], ad.AnnData)  # materialized into RAM
+    assert isinstance(loader._resolved["ctrl"], Source)  # materialized into a RAM-backed Source
+    assert isinstance(loader._resolved["ctrl"].adatas[0].X, np.ndarray)
 
 
 def test_streamed_short_run_still_raises():
