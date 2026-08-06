@@ -1,25 +1,21 @@
 r"""``EvalLoader`` — the deterministic, full-coverage counterpart to :class:`~scfit.data.Loader`.
 
-Where :class:`Loader` draws a *stochastic* per-batch class schedule (an annbatch ``ClassSampler``) for
-training, :class:`EvalLoader` walks every primary **leaf once**, in factorization order, yielding all of
-its cells (or a capped ``max_per_group``) — each matched to its linked source's leaf by ``match_on``. That
-is the shape inference / metrics want: cover every group deterministically and know which group each batch
-is (surfaced as ``batch["leaf"]``).
+Where :class:`Loader` draws a stochastic per-batch schedule for training, :class:`EvalLoader` walks every
+primary **leaf once** in factorization order, yielding all its cells (or a capped ``max_per_group``), each
+matched to its linked source by ``match_on``. Every group is covered deterministically and surfaced as
+``batch["leaf"]`` — what shape inference / metrics want.
 
-``max_per_group`` is a per-group **cap** (an upper bound, not a minimum) that doubles as a **dedup** knob:
+``max_per_group`` is a per-group **cap** that doubles as a **dedup** knob:
 
-* ``None`` — every cell of every group (full eval / metrics against real target cells);
-* ``N`` — at most ``N`` cells per group (all of them when the group has fewer);
-* ``1`` — exactly one representative per group (a group is a non-empty leaf), i.e. the unique ``group_by``
-  combinations — predict once per condition instead of per cell, or materialize a deduplicated dataset.
+* ``None`` — every cell of every group (full eval against real target cells);
+* ``N`` — at most ``N`` cells per group (all of them when fewer);
+* ``1`` — one representative per group, i.e. the unique ``group_by`` combinations (a deduplicated dataset).
 
-*Which* ``N`` cells is chosen is set by ``subsample``: ``"head"`` (the first ``N`` in row order —
-deterministic), ``"random"`` (a ``seed``-ed draw — reproducible across iterations for a fixed seed), or a
-callable ``(rows, n, rng) -> rows`` for anything else (systematic, stratified, ...).
+``subsample`` chooses *which* ``N``: ``"head"`` (first ``N`` in row order), ``"random"`` (a ``seed``-ed,
+per-seed-reproducible draw), or a callable ``(rows, n, rng) -> rows``.
 
-It reuses the same :class:`~scfit.data.Stream` + :class:`~scfit.data._source.Source` machinery as
-:class:`Loader` (obs factorization + row reads) — only the sampler is replaced by an ordered leaf walk, so
-matching, unified sources and rep handling behave identically.
+It reuses :class:`Loader`'s :class:`~scfit.data.Stream` + :class:`~scfit.data._source.Source` machinery —
+only the sampler becomes an ordered leaf walk, so matching, unified sources and reps behave identically.
 """
 
 from __future__ import annotations
@@ -71,9 +67,8 @@ class EvalLoader:
         # Optional selection: a primary weight of 0 (or an absent leaf) excludes that group, as for Loader.
         self._wanted = _positive(primary.weights)
 
-        # Each link: bucket its (positive-weight) cells by their ``match_on`` value, so a primary leaf
-        # resolves its matched source rows in O(1). A link weight of 0 excludes that group (e.g. keep only
-        # controls); ``match_on=()`` buckets everything under a single unconditional key.
+        # Each link: bucket its (positive-weight) cells by ``match_on`` value, so a primary leaf resolves its
+        # matched rows in O(1); ``match_on=()`` buckets everything under one unconditional key.
         self._lsrc: dict[str, Source] = {}
         self._lrows: dict[str, dict[tuple, np.ndarray]] = {}
         for name, link in self._links.items():

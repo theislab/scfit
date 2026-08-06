@@ -33,16 +33,16 @@ def _primary_only(adata, weights, *, batch_size=8, chunk_size=1, preload_nchunks
     )
 
 
-def test_epoch_length_is_primary_obs_over_batch_size():
+def test_n_batches_is_primary_obs_over_batch_size():
     # primary = 2 lines × 3 drugs × 16 = 96 target cells; batch 8 → 12 batches per with-replacement pass
     adata = encoded_adata(("A", "B"), ("d1", "d2", "d3"), n_per_combo=16)
     weights = uniform([(cl, dr) for cl in ("A", "B") for dr in ("d1", "d2", "d3")])
     loader = _primary_only(adata, weights)
-    assert loader.epoch_len == 96 // 8 and loader.n_iters is None  # derived pass length; infinite by default
+    assert loader.n_batches == 96 // 8 and loader.n_iters is None  # derived pass length; infinite by default
     with pytest.raises(TypeError):
         len(loader)  # infinite (n_iters=None) → unsized
-    first_pass = list(islice(loader, loader.epoch_len))  # one pass worth of batches
-    assert len(first_pass) == loader.epoch_len
+    first_pass = list(islice(loader, loader.n_batches))  # one pass worth of batches
+    assert len(first_pass) == loader.n_batches
 
 
 def test_n_iters_makes_the_loader_finite():

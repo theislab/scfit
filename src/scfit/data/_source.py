@@ -7,9 +7,7 @@ files, so a leaf that lives in only one file resolves to that file when sampled 
 
 That list order is a **load-bearing invariant** — :meth:`factorize` (obs concat) and :meth:`rep` (backings)
 must iterate ``adatas`` in the same order, or a leaf code would point at the wrong file. The factorization
-is cached per ``group_by``, so several streams naming this ``source_key`` factorize it only once (a primary
-and its matched control over one dataset); an in-memory dataset is now deduped this way too — the old cache
-was keyed by zarr path and skipped in-memory sources.
+is cached per ``group_by``, so several streams naming this ``source_key`` factorize it only once.
 """
 
 from __future__ import annotations
@@ -72,9 +70,8 @@ class Source:
     def rep(self, loc: str) -> list:
         """The array(s) backing rep ``loc``, one per AnnData in list order — with a shared-width check.
 
-        A streamed rep is stacked into one batch array by annbatch, so its ``shape[1]`` must agree across the
-        dataset's files. Differing raw gene counts are fine as long as the *streamed* rep is aligned (e.g. a
-        shared ``obsm`` embedding); a genuine mismatch raises here rather than deep inside annbatch.
+        annbatch stacks a streamed rep into one array, so its ``shape[1]`` must agree across the dataset's
+        files; a mismatch raises here rather than deep inside annbatch.
         """
         backings = get_from_container(self._adatas, loc)
         widths = {int(b.shape[1]) for b in backings}
@@ -110,10 +107,7 @@ class Source:
 
 
 def build_sources(sources: Mapping[str, Container]) -> dict[str, Source]:
-    """One :class:`Source` per ``source_key`` from a loader's ``sources`` mapping.
-
-    Shared by :class:`~scfit.data.Loader` and :class:`~scfit.data.EvalLoader`.
-    """
+    """One :class:`Source` per ``source_key`` from a loader's ``sources`` mapping."""
     return {k: Source(v) for k, v in dict(sources).items()}
 
 
@@ -123,9 +117,8 @@ def resolve_source(
     """The Source a stream reads from: its single Source, or a unified Source over several ``source_keys``.
 
     Several keys are concatenated (in key order) into one Source — one categorical universe, one set of
-    backings — so each leaf still resolves to whichever dataset holds it. Optionally cached by key-tuple, so
-    streams sharing the same set reuse it. Shared by :class:`~scfit.data.Loader` and
-    :class:`~scfit.data.EvalLoader`.
+    backings — so each leaf still resolves to whichever dataset holds it. Optionally cached by key-tuple so
+    streams sharing the same set reuse it.
     """
     keys = stream.source_keys
     if len(keys) == 1:

@@ -113,9 +113,9 @@ class Loader:
         # Default pass length: primary rows // its batch_size. ``n_iters`` overrides it — a finite loader
         # yields exactly n_iters batches then stops; None ⇒ infinite, rolling a fresh epoch each pass.
         n_root_obs = len(self._st[_PRIMARY]["cats"])
-        self.epoch_len = max(1, n_root_obs // self._root_batch_size)
+        self.n_batches = max(1, n_root_obs // self._root_batch_size)
         self.n_iters = n_iters
-        self._pass_len = n_iters if n_iters is not None else self.epoch_len
+        self._pass_len = n_iters if n_iters is not None else self.n_batches
 
         # The primary's sampler is the oracle; the primary's reps and each link's inner all deepcopy it.
         self._oracle_sampler = self._new_class_sampler(_PRIMARY)
