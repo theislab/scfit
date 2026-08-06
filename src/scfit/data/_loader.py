@@ -10,8 +10,8 @@ each link's inner) is a ``deepcopy`` of one seeded oracle, so they stay in locks
 the same rows, and a pickled loader resumes the same stream.
 
 Streams address their data by ``source_key`` into the ``sources`` mapping; each key resolves to one
-:class:`~scfit.data.Source`, which owns that dataset's obs factorization (shared by every stream naming the
-key). :meth:`Loader.from_paths` opens zarr path(s) backed — reading only the reps + cols the streams use —
+``Source`` (an internal wrapper) that owns that dataset's obs factorization, shared by every stream naming
+the key. :meth:`Loader.from_paths` opens zarr path(s) backed — reading only the reps + cols the streams use —
 and builds that mapping.
 """
 
@@ -51,7 +51,7 @@ class Loader:
 
     def __init__(
         self,
-        sources: Mapping[str, Source | ad.AnnData | list[ad.AnnData]],
+        sources: Mapping[str, ad.AnnData | list[ad.AnnData]],
         *,
         primary: Stream,
         links: Mapping[str, Stream] | None = None,
@@ -70,9 +70,7 @@ class Loader:
 
         # Each source_key resolves to one Source (a dataset + its factorization cache). Streams naming the
         # same key share the Source, so its obs is factorized once (a primary and its matched control).
-        self._sources: dict[str, Source] = {
-            k: v if isinstance(v, Source) else Source(v) for k, v in dict(sources).items()
-        }
+        self._sources: dict[str, Source] = {k: Source(v) for k, v in dict(sources).items()}
         for name, s in self._streams.items():
             if s.source_key not in self._sources:
                 raise ValueError(

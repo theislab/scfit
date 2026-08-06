@@ -14,7 +14,8 @@ import pandas as pd
 import pytest
 from scheme_helpers import KEY, encoded_adata, perturbation_streams
 
-from scfit.data import Loader, Source, Stream
+from scfit.data import Loader, Stream
+from scfit.data._source import Source
 
 READ = {"batch_size": 4, "chunk_size": 1, "preload_nchunks": 4, "to": None}
 

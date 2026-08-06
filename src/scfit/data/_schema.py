@@ -94,8 +94,8 @@ class Stream:
     source_key
         Which dataset this stream samples — a key into the ``sources`` mapping given to
         :class:`~scfit.data.Loader` (``{source_key: list[AnnData]}``). Several streams may name the same
-        ``source_key`` (a primary and its matched control over one dataset); the shared
-        :class:`~scfit.data.Source` factorizes that dataset's obs once for them.
+        ``source_key`` (a primary and its matched control over one dataset), and the dataset's obs is
+        factorized once and shared across them.
     group_by
         Columns whose unique combinations define the groups sampled (the leaves).
     reps
