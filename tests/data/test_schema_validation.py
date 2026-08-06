@@ -69,13 +69,13 @@ def test_stream_sampler_overrides_loader():
         preload_nchunks=8,
         seed=0,
     )
-    assert ld._cfg["primary"].batch_size == 4
+    assert ld._cfg["primary"]["batch_size"] == 4
     assert next(iter(ld))["primary"]["X"].shape[0] == 4  # and it really yields 4-row batches
 
 
 def test_stream_inherits_loader_sampler():
     ld = Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), **SAMPLER, seed=0)
-    assert ld._cfg["primary"].batch_size == 8
+    assert ld._cfg["primary"]["batch_size"] == 8
 
 
 def test_no_sampler_on_either_raises():

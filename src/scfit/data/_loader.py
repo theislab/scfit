@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from copy import deepcopy
-from typing import NamedTuple, Unpack
+from typing import Unpack
 
 import anndata as ad
 import numpy as np
@@ -35,15 +35,6 @@ from scfit.data._source import Source
 __all__ = ["Loader"]
 
 _PRIMARY = "primary"  # reserved name of the root / target stream
-
-
-class _SamplerCfg(NamedTuple):
-    """Resolved read parameters for one stream: the merged :class:`SamplerKwargs` + the loader-global backend."""
-
-    batch_size: int
-    chunk_size: int
-    preload_nchunks: int
-    to: str | None
 
 
 class Loader:
@@ -67,6 +58,7 @@ class Loader:
         self._streams: dict[str, Stream] = {_PRIMARY: primary, **links}
         self._links: list[str] = list(links)
         self._preload_to_gpu = preload_to_gpu
+        self._to = to  # loader-global backend for every stream's per-rep annbatch loaders
 
         # Each source_key resolves to one Source (a dataset + its factorization cache); streams naming the
         # same key share it (factorized once). A stream naming several keys reads a unified Source over them.
@@ -76,22 +68,21 @@ class Loader:
                 if k not in self._sources:
                     raise ValueError(f"stream {name!r}: source_key {k!r} not in sources {sorted(self._sources)}.")
 
-        # Resolve sampler config per stream: the stream's own sampler kwargs win; else the loader's; else error.
-        self._cfg: dict[str, _SamplerCfg] = {}
+        # Resolve sampler kwargs per stream: the stream's own win; else the loader's; else error.
+        self._cfg: dict[str, dict[str, int]] = {}
         for name, s in self._streams.items():
-            eff = s.sampler_kwargs or dict(sampler_kwargs)
+            eff = dict(s.sampler_kwargs or sampler_kwargs)
             if not eff:
                 raise ValueError(
                     f"stream {name!r}: sampler kwargs {list(_SAMPLER_KEYS)} set on neither the Stream nor the Loader."
                 )
-            cfg = _SamplerCfg(eff["batch_size"], eff["chunk_size"], eff["preload_nchunks"], to)
-            if s.in_memory and cfg.chunk_size != 1:
+            if s.in_memory and eff["chunk_size"] != 1:
                 raise ValueError(
-                    f"stream {name!r} is in_memory but chunk_size={cfg.chunk_size}: an in-memory stream is read "
+                    f"stream {name!r} is in_memory but chunk_size={eff['chunk_size']}: an in-memory stream is read "
                     "from RAM in one shot and must use chunk_size=1 (set it explicitly)."
                 )
-            self._cfg[name] = cfg
-        self._root_batch_size = self._cfg[_PRIMARY].batch_size
+            self._cfg[name] = eff
+        self._root_batch_size = self._cfg[_PRIMARY]["batch_size"]
 
         # Each link is matched to the primary on its ``match_on`` columns (⊆ the columns they share).
         primary_cols = self._streams[_PRIMARY].group_by
@@ -199,11 +190,11 @@ class Loader:
         cfg = self._cfg[name]
         try:  # annbatch enforces its own run-length rule for chunk>1; forward with stream context
             return ClassSampler(
-                chunk_size=cfg.chunk_size,
-                preload_nchunks=cfg.preload_nchunks,
-                batch_size=cfg.batch_size,
+                chunk_size=cfg["chunk_size"],
+                preload_nchunks=cfg["preload_nchunks"],
+                batch_size=cfg["batch_size"],
                 classes=self._st[name]["cats"],
-                num_samples=self._n_batches * cfg.batch_size,
+                num_samples=self._n_batches * cfg["batch_size"],
                 class_weights=self._st[name]["w"],
                 drop_last=True,
                 rng=deepcopy(self._rngs[name]),
@@ -220,9 +211,9 @@ class Loader:
         try:
             return BoundClassSampler(
                 deepcopy(self._oracle_sampler),
-                cfg.chunk_size,
-                cfg.preload_nchunks,
-                cfg.batch_size,
+                cfg["chunk_size"],
+                cfg["preload_nchunks"],
+                cfg["batch_size"],
                 classes_to_bind_on=cats,
                 # primary tuple position → link tuple position, per shared ``match_on`` column
                 on={primary.group_by.index(c): link.group_by.index(c) for c in link.match_on},
@@ -235,7 +226,7 @@ class Loader:
 
     def _build_per_rep_loaders(self, name: str, sampler: ClassSampler | BoundClassSampler) -> dict[str, AnnbatchLoader]:
         # one annbatch Loader per rep of the stream, keyed by rep loc; all deepcopy the same sampler.
-        src, s, to = self._resolved[name], self._streams[name], self._cfg[name].to
+        src, s, to = self._resolved[name], self._streams[name], self._to
         loaders: dict[str, AnnbatchLoader] = {}
         for loc in s.reps:
             base = AnnbatchLoader(
