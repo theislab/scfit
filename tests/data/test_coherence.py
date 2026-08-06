@@ -28,7 +28,8 @@ from scheme_helpers import (
     uniform,
 )
 
-from scfit.data import Loader, Source, Stream
+from scfit.data import Loader, Stream
+from scfit.data._source import Source
 
 COLS = ("cell_line", "drug")
 

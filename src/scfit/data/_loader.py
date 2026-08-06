@@ -68,14 +68,13 @@ class Loader:
         self._links: list[str] = list(links)
         self._preload_to_gpu = preload_to_gpu
 
-        # Each source_key resolves to one Source (a dataset + its factorization cache). Streams naming the
-        # same key share the Source, so its obs is factorized once (a primary and its matched control).
+        # Each source_key resolves to one Source (a dataset + its factorization cache); streams naming the
+        # same key share it (factorized once). A stream naming several keys reads a unified Source over them.
         self._sources: dict[str, Source] = {k: Source(v) for k, v in dict(sources).items()}
         for name, s in self._streams.items():
-            if s.source_key not in self._sources:
-                raise ValueError(
-                    f"stream {name!r}: source_key {s.source_key!r} not in sources {sorted(self._sources)}."
-                )
+            for k in s.source_keys:
+                if k not in self._sources:
+                    raise ValueError(f"stream {name!r}: source_key {k!r} not in sources {sorted(self._sources)}.")
 
         # Resolve sampler config per stream: the stream's own sampler kwargs win; else the loader's; else error.
         self._cfg: dict[str, _SamplerCfg] = {}
@@ -115,10 +114,11 @@ class Loader:
         # Per stream: resolve its Source (materializing an in_memory stream into RAM) and pull that source's
         # tuple-labelled categorical / weight vector / leaf list (obs only — no cell matrices). The Source
         # factorizes each ``(source_key, group_by)`` once, so streams sharing a key reuse it.
+        self._union_cache: dict[tuple[str, ...], Source] = {}
         self._resolved: dict[str, Source] = {}
         self._st: dict[str, dict] = {}
         for name, s in self._streams.items():
-            base = self._sources[s.source_key]
+            base = self._resolve_source(s)
             src = base.materialize(s) if s.in_memory else base
             f = src.factorize(s.group_by)
             self._resolved[name] = src
@@ -169,8 +169,9 @@ class Loader:
         reps: dict[str, set] = {}
         cols: dict[str, set] = {}
         for s in streams.values():
-            reps.setdefault(s.source_key, set()).update(s.reps)
-            cols.setdefault(s.source_key, set()).update(s.group_by)
+            for k in s.source_keys:
+                reps.setdefault(k, set()).update(s.reps)
+                cols.setdefault(k, set()).update(s.group_by)
         sources = {
             k: open_source(p, keys=sorted(reps.get(k, ())), cols=sorted(cols.get(k, ())))
             for k, p in dict(paths).items()
@@ -178,6 +179,21 @@ class Loader:
         return cls(
             sources, primary=primary, links=links, seed=seed, to=to, preload_to_gpu=preload_to_gpu, **sampler_kwargs
         )
+
+    def _resolve_source(self, s: Stream) -> Source:
+        """The Source a stream reads from: its single Source, or a unified Source over several ``source_keys``.
+
+        Several keys are concatenated (in key order) into one Source — one categorical universe, one set of
+        backings — so the ordinary annbatch sampler path samples across all of them and each leaf still
+        resolves to whichever dataset holds it. The unified Source's rep-width check rejects keys whose
+        streamed rep feature dimensions differ. Cached by key-tuple so streams sharing the same set reuse it.
+        """
+        keys = s.source_keys
+        if len(keys) == 1:
+            return self._sources[keys[0]]
+        if keys not in self._union_cache:
+            self._union_cache[keys] = Source([a for k in keys for a in self._sources[k].adatas])
+        return self._union_cache[keys]
 
     def _new_class_sampler(self, name: str) -> ClassSampler:
         cfg = self._cfg[name]

@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 from scheme_helpers import LINES, perturbation_loader
 
-from scfit.data import Source
+from scfit.data._source import Source
 
 COLS = ("cell_line", "drug")
 

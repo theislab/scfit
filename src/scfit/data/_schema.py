@@ -92,10 +92,13 @@ class Stream:
     Parameters
     ----------
     source_key
-        Which dataset this stream samples — a key into the ``sources`` mapping given to
-        :class:`~scfit.data.Loader` (``{source_key: list[AnnData]}``). Several streams may name the same
-        ``source_key`` (a primary and its matched control over one dataset), and the dataset's obs is
-        factorized once and shared across them.
+        Which dataset(s) this stream samples — a key (or a sequence of keys) into the ``sources`` mapping
+        given to :class:`~scfit.data.Loader` (``{source_key: list[AnnData]}``). Several streams may name the
+        same key (a primary and its matched control over one dataset), and the dataset's obs is factorized
+        once and shared across them. Passing **several** keys unifies those datasets into one categorical
+        universe (their cells concatenated), so the stream samples across all of them with a single sampler —
+        each leaf still resolves to whichever dataset holds it. Unified datasets must share the streamed
+        rep's feature dimension (``shape[1]``).
     group_by
         Columns whose unique combinations define the groups sampled (the leaves).
     reps
@@ -123,7 +126,7 @@ class Stream:
 
     def __init__(
         self,
-        source_key: str,
+        source_key: str | Sequence[str],
         *,
         group_by: Sequence[str],
         reps: str | Sequence[str] = "X",
@@ -134,8 +137,11 @@ class Stream:
         **sampler_kwargs: Unpack[SamplerKwargs],
     ) -> None:
         _check_sampler(sampler_kwargs, "Stream")
-        if not isinstance(source_key, str) or not source_key:
-            raise ValueError("Stream.source_key must be a non-empty string.")
+        keys = (source_key,) if isinstance(source_key, str) else tuple(source_key)
+        if not keys or not all(isinstance(k, str) and k for k in keys):
+            raise ValueError("Stream.source_key must be a non-empty string, or a non-empty sequence of them.")
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"Stream.source_key has duplicate keys: {source_key!r}.")
         group_by = tuple(group_by)
         if not group_by:
             raise ValueError("Stream.group_by must be non-empty.")
@@ -154,6 +160,7 @@ class Stream:
                     raise ValueError(f"label_lookup key {k!r} arity != group_by {group_by}.")
 
         self.source_key = source_key
+        self.source_keys: tuple[str, ...] = keys  # normalized; one, or several to unify over
         self.group_by = group_by
         self.reps: tuple[str, ...] = reps
         self.weights = weights
