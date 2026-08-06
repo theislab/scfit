@@ -97,7 +97,7 @@ def materialize_node(
     codes, leaves = factorization if factorization is not None else leaf_codes(obs, cols)
     selected = np.flatnonzero(weight_vector(stream.weights, leaves) > 0)  # leaf codes with positive weight
     row_idx = np.flatnonzero(np.isin(codes, selected))  # ascending global rows of the selected leaves
-    reps = {loc: _read_rows(source, loc, row_idx) for loc in stream.rep}  # keyed by loc string
+    reps = {loc: _read_rows(source, loc, row_idx) for loc in stream.reps}  # keyed by loc string
     sub_obs = obs.iloc[row_idx].reset_index(drop=True)
     order = sub_obs.sort_values(list(cols), kind="stable").index.to_numpy()  # contiguous runs for chunk>1
     sub_obs, reps = sub_obs.iloc[order].reset_index(drop=True), {k: v[order] for k, v in reps.items()}

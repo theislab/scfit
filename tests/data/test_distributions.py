@@ -12,7 +12,7 @@ from collections import Counter
 from itertools import islice
 
 import pytest
-from scheme_helpers import assert_shares, encoded_adata, leaf_shares, only_leaf, rep, uniform
+from scheme_helpers import KEY, assert_shares, encoded_adata, leaf_shares, only_leaf, rep, uniform
 
 from scfit.data import Loader, Stream
 
@@ -42,7 +42,7 @@ READ = {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
 )
 def test_primary_draw_shares(weights: dict, expected: dict):
     adata = encoded_adata(("A", "B"), ("d1", "d2"), n_per_combo=64)
-    loader = Loader(Stream(adata, group_by=COLS, weights=weights), **READ, seed=0)
+    loader = Loader({KEY: adata}, primary=Stream(KEY, group_by=COLS, weights=weights), **READ, seed=0)
     assert_shares(leaf_shares(loader, "primary", 5000), expected)
 
 
@@ -51,10 +51,11 @@ def test_link_label_follows_weights_within_context():
     # be drawn 3:1 — i.e. P(drug | cell_line) is weight-controlled (the BoundClassSampler select + project).
     adata = encoded_adata(("A", "B"), ("d1", "d2"), n_per_combo=64)
     loader = Loader(
-        Stream(adata, group_by=COLS, weights=uniform([("A", "d1"), ("A", "d2"), ("B", "d1"), ("B", "d2")])),
+        {KEY: adata},
+        primary=Stream(KEY, group_by=COLS, weights=uniform([("A", "d1"), ("A", "d2"), ("B", "d1"), ("B", "d2")])),
         links={
             "src": Stream(
-                adata,
+                KEY,
                 group_by=COLS,
                 match_on=("cell_line",),
                 weights={("A", "d1"): 3, ("A", "d2"): 1, ("B", "d1"): 1, ("B", "d2"): 1},

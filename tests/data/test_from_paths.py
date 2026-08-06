@@ -1,7 +1,7 @@
-"""Path sources — a ``Stream`` takes a zarr path (or list of paths) and the ``Loader`` opens it backed.
+"""Path sources — ``Loader.from_paths`` opens zarr ``{source_key: path | [paths]}`` backed.
 
 Covers the source-value shapes (single path / list of paths / already-constructed AnnData), the "load only
-the reps the stream uses" contract (via ``load_backed_adata``), that an annbatch collection root is
+the reps the streams use" contract (via ``load_backed_adata``), that an annbatch collection root is
 rejected (unsupported), and that a path-sourced loader streams matched batches end-to-end.
 """
 
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 from annbatch import DatasetCollection
-from scheme_helpers import perturbation_obs, uniform, write_zarr
+from scheme_helpers import KEY, perturbation_obs, uniform, write_zarr
 
 from scfit.data import Loader, Stream
 from scfit.data._io import load_backed_adata
@@ -36,14 +36,19 @@ def _adata(n_per_combo: int = 16, seed: int = 0) -> ad.AnnData:
     return a
 
 
-def _streams(source):
+def _streams():
     combos = {(cl, dr) for cl in LINES for dr in DRUGS}
     pert = uniform([c for c in combos if c[1] != "control"])
     ctrl = uniform([c for c in combos if c[1] == "control"])
     return (
-        Stream(source, group_by=COLS, rep="X", weights=pert),
-        {"ctrl": Stream(source, group_by=COLS, rep=("X", "obsm/emb"), match_on=("cell_line",), weights=ctrl)},
+        Stream(KEY, group_by=COLS, reps="X", weights=pert),
+        {"ctrl": Stream(KEY, group_by=COLS, reps=("X", "obsm/emb"), match_on=("cell_line",), weights=ctrl)},
     )
+
+
+def _loader(path_value):
+    primary, links = _streams()
+    return Loader.from_paths({KEY: path_value}, primary=primary, links=links, seed=0, **READ)
 
 
 def _open_group(path):
@@ -71,13 +76,14 @@ def test_load_backed_adata_layers_and_no_x(tmp_path):
     assert list(backed.obs.columns) == ["cell_line"]
 
 
-# ── Stream source-value shapes, via the Loader ─────────────────────────────────────────────────
+# ── Loader.from_paths: source-value shapes ─────────────────────────────────────────────────────
 def test_single_path_source_opened_backed_and_streams(tmp_path):
     p = write_zarr(_adata(), tmp_path / "a.zarr")
-    loader = Loader(*_streams(p), seed=0, **READ)
-    assert isinstance(loader._sources["primary"].X, ad.abc.CSRDataset)  # backed, not in-memory
-    assert list(loader._sources["ctrl"].obsm) == ["emb"]  # only the reps the ctrl stream uses
-    assert "log1p" not in loader._sources["ctrl"].layers
+    loader = _loader(p)
+    a = loader._sources[KEY].adatas[0]
+    assert isinstance(a.X, ad.abc.CSRDataset)  # backed, not in-memory
+    assert list(a.obsm) == ["emb"]  # only the reps the streams use (union: X + obsm/emb)
+    assert "log1p" not in a.layers
     b = next(iter(loader))
     assert b["primary"]["X"].shape == (16, 5)
     assert b["ctrl"]["X"].shape == (16, 5)  # matched control rows
@@ -86,9 +92,9 @@ def test_single_path_source_opened_backed_and_streams(tmp_path):
 
 def test_list_of_paths_source_streams(tmp_path):
     paths = [write_zarr(_adata(seed=i), tmp_path / f"a{i}.zarr") for i in range(2)]
-    loader = Loader(*_streams(paths), seed=0, **READ)
-    src = loader._sources["primary"]
-    assert isinstance(src, list) and len(src) == 2 and all(isinstance(a, ad.AnnData) for a in src)
+    loader = _loader(paths)
+    adatas = loader._sources[KEY].adatas
+    assert len(adatas) == 2 and all(isinstance(a, ad.AnnData) for a in adatas)
     assert next(iter(loader))["primary"]["X"].shape == (16, 5)
 
 
@@ -108,4 +114,4 @@ def test_collection_root_is_unsupported(tmp_path):
         warnings.simplefilter("ignore")
         DatasetCollection(cp, mode="a").add_adatas([ap], groupby=list(COLS), shuffle=False)
     with pytest.raises(NotImplementedError, match="DatasetCollection"):
-        Loader(*_streams(cp), seed=0, **READ)
+        _loader(cp)
