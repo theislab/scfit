@@ -15,21 +15,18 @@ over every group. See ``README.md`` for the model and the cellflow / sc-flow-too
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from os import PathLike
 from typing import TypedDict, Unpack
 
 import anndata as ad
 import numpy as np
 
 type Container = ad.AnnData | list[ad.AnnData]
-# What a Stream accepts as its source: an in-memory container, or zarr path(s) opened backed (see _io).
-type Source = Container | str | PathLike | Sequence[str | PathLike]
 
 # The selection: a mapping {group -> weight} (a group is a ``group_by`` tuple). A group absent / weight 0
 # is excluded — that IS the selection. ``None`` means uniform over every group.
 Weights = Mapping[tuple, float]
 
-__all__ = ["Container", "SamplerKwargs", "Source", "Stream", "Weights", "weight_vector"]
+__all__ = ["Container", "SamplerKwargs", "Stream", "Weights", "weight_vector"]
 
 # The annbatch read parameters, defined once (via ``Unpack[SamplerKwargs]``) for both Stream and Loader.
 _SAMPLER_KEYS = ("batch_size", "chunk_size", "preload_nchunks")
@@ -94,12 +91,14 @@ class Stream:
 
     Parameters
     ----------
-    source
-        An in-memory ``AnnData``, a zarr path, or a list of either — the cells this stream samples. A path
-        is opened backed, reading only the reps + columns this stream uses (see :func:`~binded._io.open_source`).
+    source_key
+        Which dataset this stream samples — a key into the ``sources`` mapping given to
+        :class:`~scfit.data.Loader` (``{source_key: list[AnnData]}``). Several streams may name the same
+        ``source_key`` (a primary and its matched control over one dataset); the shared
+        :class:`~scfit.data.Source` factorizes that dataset's obs once for them.
     group_by
         Columns whose unique combinations define the groups sampled (the leaves).
-    rep
+    reps
         Representation location(s) to stream — a loc string ``"X"`` / ``"obsm/<k>"`` / ``"layers/<k>"``, or a
         tuple of them for several **aligned** reps of the same cells.
     weights
@@ -116,7 +115,7 @@ class Stream:
     in_memory
         Materialize this stream's selected (positive-weight) cells into RAM once, instead of re-reading the
         source each batch (for a small, frequently re-drawn pool such as a matched control).
-    **sampler
+    **sampler_kwargs
         The read parameters :class:`SamplerKwargs` — ``batch_size`` / ``chunk_size`` / ``preload_nchunks``.
         All-or-nothing: pass all three to set them on this stream, or none to inherit the
         :class:`~scfit.data.Loader`'s.
@@ -124,23 +123,25 @@ class Stream:
 
     def __init__(
         self,
-        source: Source,
+        source_key: str,
         *,
         group_by: Sequence[str],
-        rep: str | Sequence[str] = "X",
+        reps: str | Sequence[str] = "X",
         weights: Weights | None = None,
         label_lookup: Mapping[tuple, Mapping[str, np.ndarray]] | None = None,
         match_on: Sequence[str] = (),
         in_memory: bool = False,
-        **sampler: Unpack[SamplerKwargs],
+        **sampler_kwargs: Unpack[SamplerKwargs],
     ) -> None:
-        _check_sampler(sampler, "Stream")
+        _check_sampler(sampler_kwargs, "Stream")
+        if not isinstance(source_key, str) or not source_key:
+            raise ValueError("Stream.source_key must be a non-empty string.")
         group_by = tuple(group_by)
         if not group_by:
             raise ValueError("Stream.group_by must be non-empty.")
-        rep = (rep,) if isinstance(rep, str) else tuple(rep) if isinstance(rep, tuple | list) else ()
-        if not rep or not all(isinstance(r, str) and r for r in rep):
-            raise ValueError('Stream.rep must be one or more non-empty loc strings ("X" / "obsm/<k>" / …).')
+        reps = (reps,) if isinstance(reps, str) else tuple(reps) if isinstance(reps, tuple | list) else ()
+        if not reps or not all(isinstance(r, str) and r for r in reps):
+            raise ValueError('Stream.reps must be one or more non-empty loc strings ("X" / "obsm/<k>" / …).')
         if weights is not None:
             for k in weights:
                 if len(k) != len(group_by):
@@ -152,11 +153,11 @@ class Stream:
                 if len(k) != len(group_by):
                     raise ValueError(f"label_lookup key {k!r} arity != group_by {group_by}.")
 
-        self.source = source
+        self.source_key = source_key
         self.group_by = group_by
-        self.rep: tuple[str, ...] = rep
+        self.reps: tuple[str, ...] = reps
         self.weights = weights
         self.label_lookup = label_lookup
         self.match_on = tuple(match_on)
         self.in_memory = in_memory
-        self.sampler: dict[str, int] = dict(sampler)  # {} (inherit) or all three (see _check_sampler)
+        self.sampler_kwargs: dict[str, int] = dict(sampler_kwargs)  # {} (inherit) or all three (see _check_sampler)
