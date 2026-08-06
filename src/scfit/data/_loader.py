@@ -29,12 +29,18 @@ from annbatch import Loader as AnnbatchLoader  # annbatch's low-level per-rep lo
 # over stock annbatch==0.2.1 (and patches AnnbatchLoader.__iter__ on import) so scfit stays PyPI-publishable.
 from scfit.data._annbatch_shim import BoundClassSampler, ClassSampler
 from scfit.data._io import is_backed_array, open_source
-from scfit.data._schema import _SAMPLER_KEYS, SamplerKwargs, Stream, _check_sampler, weight_vector
-from scfit.data._source import Source
+from scfit.data._schema import (
+    _PRIMARY,
+    _SAMPLER_KEYS,
+    SamplerKwargs,
+    Stream,
+    _check_sampler,
+    validate_links,
+    weight_vector,
+)
+from scfit.data._source import Source, build_sources, resolve_source
 
 __all__ = ["Loader"]
-
-_PRIMARY = "primary"  # reserved name of the root / target stream
 
 
 class Loader:
@@ -53,8 +59,7 @@ class Loader:
     ) -> None:
         _check_sampler(sampler_kwargs, "Loader")
         links = dict(links or {})
-        if _PRIMARY in links:
-            raise ValueError(f"link name {_PRIMARY!r} is reserved for the primary stream.")
+        validate_links(primary, links)
         self._streams: dict[str, Stream] = {_PRIMARY: primary, **links}
         self._links: list[str] = list(links)
         self._preload_to_gpu = preload_to_gpu
@@ -62,7 +67,7 @@ class Loader:
 
         # Each source_key resolves to one Source (a dataset + its factorization cache); streams naming the
         # same key share it (factorized once). A stream naming several keys reads a unified Source over them.
-        self._sources: dict[str, Source] = {k: Source(v) for k, v in dict(sources).items()}
+        self._sources: dict[str, Source] = build_sources(sources)
         for name, s in self._streams.items():
             for k in s.source_keys:
                 if k not in self._sources:
@@ -84,16 +89,6 @@ class Loader:
             self._cfg[name] = eff
         self._root_batch_size = self._cfg[_PRIMARY]["batch_size"]
 
-        # Each link is matched to the primary on its ``match_on`` columns (⊆ the columns they share).
-        primary_cols = self._streams[_PRIMARY].group_by
-        for name in self._links:
-            shared = set(primary_cols) & set(self._streams[name].group_by)
-            if not set(self._streams[name].match_on) <= shared:
-                raise ValueError(
-                    f"stream {name!r} match_on {self._streams[name].match_on} must be ⊆ the columns it shares "
-                    f"with the primary ({sorted(shared)})."
-                )
-
         # One independent sub-generator per stream (spawned off ``default_rng(seed)``); the samplers deepcopy
         # these rather than advance them, so a stream's oracle/target/link samplers all start from the identical
         # state and stay in lockstep, and the whole stream is reproducible from the seed.
@@ -109,7 +104,7 @@ class Loader:
         self._resolved: dict[str, Source] = {}
         self._st: dict[str, dict] = {}
         for name, s in self._streams.items():
-            base = self._resolve_source(s)
+            base = resolve_source(self._sources, s, self._union_cache)
             src = base.materialize(s) if s.in_memory else base
             f = src.factorize(s.group_by)
             self._resolved[name] = src
@@ -170,21 +165,6 @@ class Loader:
         return cls(
             sources, primary=primary, links=links, seed=seed, to=to, preload_to_gpu=preload_to_gpu, **sampler_kwargs
         )
-
-    def _resolve_source(self, s: Stream) -> Source:
-        """The Source a stream reads from: its single Source, or a unified Source over several ``source_keys``.
-
-        Several keys are concatenated (in key order) into one Source — one categorical universe, one set of
-        backings — so the ordinary annbatch sampler path samples across all of them and each leaf still
-        resolves to whichever dataset holds it. The unified Source's rep-width check rejects keys whose
-        streamed rep feature dimensions differ. Cached by key-tuple so streams sharing the same set reuse it.
-        """
-        keys = s.source_keys
-        if len(keys) == 1:
-            return self._sources[keys[0]]
-        if keys not in self._union_cache:
-            self._union_cache[keys] = Source([a for k in keys for a in self._sources[k].adatas])
-        return self._union_cache[keys]
 
     def _new_class_sampler(self, name: str) -> ClassSampler:
         cfg = self._cfg[name]

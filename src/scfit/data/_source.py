@@ -14,18 +14,19 @@ was keyed by zarr path and skipped in-memory sources.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, NamedTuple
 
 import anndata as ad
 import numpy as np
 import pandas as pd
 
-from scfit.data._io import get_from_container, is_backed_array, leaf_codes, materialize_node, obs_columns
+from scfit.data._io import get_from_container, leaf_codes, materialize_node, obs_columns
 
 if TYPE_CHECKING:
-    from scfit.data._schema import Stream
+    from scfit.data._schema import Container, Stream
 
-__all__ = ["Source"]
+__all__ = ["Source", "build_sources", "resolve_source"]
 
 
 class _Factorized(NamedTuple):
@@ -85,10 +86,6 @@ class Source:
             )
         return backings
 
-    def in_memory(self, loc: str) -> bool:
-        """True if rep ``loc`` is backed by in-memory arrays (→ annbatch ``add_adatas``), not on-disk backings."""
-        return not is_backed_array(self.rep(loc)[0])
-
     def materialize(self, stream: Stream) -> Source:
         """A new :class:`Source` holding this stream's selected (positive-weight) cells in RAM.
 
@@ -105,3 +102,31 @@ class Source:
     def clear_cache(self) -> None:
         """Drop the factorization cache (the codes are redundant once a Loader has built its samplers)."""
         self._leaf_cache = {}
+
+
+def build_sources(sources: Mapping[str, Container]) -> dict[str, Source]:
+    """One :class:`Source` per ``source_key`` from a loader's ``sources`` mapping.
+
+    Shared by :class:`~scfit.data.Loader` and :class:`~scfit.data.EvalLoader`.
+    """
+    return {k: Source(v) for k, v in dict(sources).items()}
+
+
+def resolve_source(
+    sources: dict[str, Source], stream: Stream, cache: dict[tuple[str, ...], Source] | None = None
+) -> Source:
+    """The Source a stream reads from: its single Source, or a unified Source over several ``source_keys``.
+
+    Several keys are concatenated (in key order) into one Source — one categorical universe, one set of
+    backings — so each leaf still resolves to whichever dataset holds it. Optionally cached by key-tuple, so
+    streams sharing the same set reuse it. Shared by :class:`~scfit.data.Loader` and
+    :class:`~scfit.data.EvalLoader`.
+    """
+    keys = stream.source_keys
+    if len(keys) == 1:
+        return sources[keys[0]]
+    if cache is None:
+        cache = {}
+    if keys not in cache:
+        cache[keys] = Source([a for k in keys for a in sources[k].adatas])
+    return cache[keys]

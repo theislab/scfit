@@ -14,7 +14,8 @@ factorization, shared by every stream naming the key.
 See ``README.md`` (next to this file) for the model and the cellflow / sc-flow-tools mapping.
 """
 
+from scfit.data._eval import EvalLoader
 from scfit.data._loader import Loader
 from scfit.data._schema import Stream
 
-__all__ = ["Loader", "Stream"]
+__all__ = ["EvalLoader", "Loader", "Stream"]
