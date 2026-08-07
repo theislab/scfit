@@ -1,8 +1,6 @@
 """scfit — the family-neutral core (registry + streaming data).
 
-``import scfit`` stays light and **torch-free**: only ``registry`` (cattrs) loads eagerly. ``data`` (the
-annbatch streaming stack, ``scfit[data]``) loads lazily on first attribute access or explicit submodule
-import, so a consumer that only wants the component registry never drags in the data deps.
+``import scfit`` stays light and **torch-free**: only ``registry`` (cattrs) loads eagerly.
 """
 
 from __future__ import annotations
@@ -11,6 +9,8 @@ from . import registry
 
 __all__ = ["registry", "data"]
 
+# ``data`` (the annbatch streaming stack, ``scfit[data]``) loads on first attribute access or explicit
+# submodule import, so a consumer that only wants the component registry never drags in the data deps.
 _LAZY = frozenset({"data"})
 
 

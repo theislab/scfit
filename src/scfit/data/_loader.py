@@ -1,21 +1,8 @@
 """``Loader`` — streams matched batches from one primary :class:`Stream` plus named linked streams.
 
-The loader is an infinite stream, rolling a fresh epoch each pass; :meth:`Loader.set_n_iters` sets a pause
-point (a StopIteration every ``n_iters`` batches) without perturbing the schedule, so consecutive passes
-resume rather than replay. The primary draws a per-batch class schedule ∝ its weights via an annbatch
+The primary draws a per-batch class schedule ∝ its weights via an annbatch
 :class:`~annbatch.samplers.ClassSampler`; every link replays that schedule onto its own cells via a
-:class:`~annbatch.samplers.BoundClassSampler` — matched by *label* on its ``match_on`` columns (select via
-the link's weights + project via ``match_on``). A batch is ``{stream name: {rep loc: rows}}`` for the
-primary and every link, plus ``"leaves"`` — ``{stream name: <group_by tuple>}``, the group each stream drew.
-Side arrays keyed by group (a perturbation encoding, a dose vector) are the *consumer's*: index them with
-that leaf. Every sampler that must agree within a pass (the schedule oracle, the primary's reps,
-each link's inner) is a ``deepcopy`` of one seeded oracle, so they stay in lockstep, a stream's reps read
-the same rows, and a pickled loader resumes the same stream.
-
-Streams address their data by ``source_key`` into the ``sources`` mapping; each key resolves to one
-``Source`` (an internal wrapper) that owns that dataset's obs factorization, shared by every stream naming
-the key. :meth:`Loader.from_paths` opens zarr path(s) backed — reading only the reps + cols the streams use —
-and builds that mapping.
+:class:`~annbatch.samplers.BoundClassSampler`, matched on its ``match_on`` columns.
 """
 
 from __future__ import annotations
@@ -47,7 +34,17 @@ __all__ = ["Loader"]
 
 
 class Loader:
-    """Yields ``{stream name: {rep loc: rows}}`` (+ ``"leaves"``) — the primary plus its matched links."""
+    """An infinite stream of matched batches — the primary plus its links, keyed by stream name.
+
+    A batch is ``{stream name: {rep loc: rows}}`` for the primary and every link, plus ``"leaves"``
+    (``{stream name: <group_by tuple>}`` — the group each stream drew). Side arrays keyed by group (a
+    perturbation encoding, a dose vector) are the *consumer's*: index them with that leaf.
+
+    A fresh epoch rolls each pass; :meth:`set_n_iters` only inserts a pause point, it never restarts.
+    Streams address their data by ``source_key`` into ``sources``; each key resolves to one
+    :class:`~scfit.data._source.Source` owning that dataset's obs factorization, shared by every stream
+    naming it. :meth:`from_paths` builds that mapping from zarr paths.
+    """
 
     def __init__(
         self,
@@ -124,7 +121,9 @@ class Loader:
         self.n_batches = self._pass_len = max(1, n_root_obs // self._root_batch_size)
         self.n_iters: int | None = None
 
-        # The primary's sampler is the oracle; the primary's reps and each link's inner all deepcopy it.
+        # The primary's sampler is the oracle; the primary's reps and each link's inner all deepcopy it. Every
+        # sampler that must agree within a pass IS a deepcopy of one seeded oracle — that is what keeps them in
+        # lockstep, makes a stream's reps read the same rows, and lets a pickled loader resume the same stream.
         self._oracle_sampler = self._new_class_sampler(_PRIMARY)
         self._loaders: dict[str, dict[str, AnnbatchLoader]] = {
             _PRIMARY: self._build_per_rep_loaders(_PRIMARY, deepcopy(self._oracle_sampler))

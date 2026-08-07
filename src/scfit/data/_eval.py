@@ -1,25 +1,6 @@
-r"""``EvalLoader`` — the deterministic, full-coverage counterpart to :class:`~scfit.data.Loader`.
+"""``EvalLoader`` — the deterministic, full-coverage counterpart to :class:`~scfit.data.Loader`.
 
-Where :class:`Loader` draws a stochastic per-batch schedule for training, :class:`EvalLoader` walks every
-primary **leaf once** in factorization order, yielding all its cells (or a capped ``max_per_group``), each
-matched to its linked source by ``match_on``. Every group is covered deterministically and surfaced as
-``batch["leaf"]`` — what shape inference / metrics want.
-
-``max_per_group`` is a per-group **cap** that doubles as a **dedup** knob:
-
-* ``None`` — every cell of every group (full eval against real target cells);
-* ``N`` — at most ``N`` cells per group (all of them when fewer);
-* ``1`` — one representative per group, i.e. the unique ``group_by`` combinations (a deduplicated dataset).
-
-``subsample`` chooses *which* ``N``: ``"head"`` (first ``N`` in row order), ``"random"`` (a ``seed``-ed,
-per-seed-reproducible draw), or a callable ``(rows, n, rng) -> rows``.
-
-A stream with ``reps=()`` is **metadata-only**: its entry in the batch is an empty mapping and no cell
-matrix is read. On the primary that is a prediction pass with no known target state — every covariate
-combination enumerated as ``batch["leaf"]``, with linked streams still supplying real cells (e.g. matched
-controls) as model input.
-
-It reuses :class:`Loader`'s :class:`~scfit.data.Stream` + :class:`~scfit.data._source.Source` machinery —
+It reuses :class:`Loader`'s :class:`~scfit.data.Stream` + :class:`~scfit.data._source.Source` machinery;
 only the sampler becomes an ordered leaf walk, so matching, unified sources and reps behave identically.
 """
 
@@ -43,7 +24,23 @@ def _positive(weights: Weights | None) -> set[tuple] | None:
 
 
 class EvalLoader:
-    """Deterministic full-coverage (or deduplicated) matched pass over grouped data. See the module docstring."""
+    """Deterministic full-coverage (or deduplicated) matched pass over grouped data.
+
+    Where :class:`~scfit.data.Loader` draws a stochastic per-batch schedule for training, this walks every
+    primary **leaf once** in factorization order, yielding all its cells, each matched to its linked source
+    by ``match_on``. Every group is covered and surfaced as ``batch["leaf"]`` — what shape inference and
+    metrics want.
+
+    Parameters
+    ----------
+    max_per_group
+        Per-group cap that doubles as a dedup knob. :obj:`None` — every cell of every group (full eval
+        against real target cells); ``N`` — at most ``N`` per group (all of them when fewer); ``1`` — one
+        representative per group, i.e. the unique ``group_by`` combinations (a deduplicated dataset).
+    subsample
+        Which ``N``: ``"head"`` (first ``N`` in row order), ``"random"`` (a ``seed``-ed, per-seed
+        reproducible draw), or a callable ``(rows, n, rng) -> rows``.
+    """
 
     def __init__(
         self,
@@ -101,7 +98,12 @@ class EvalLoader:
         return self._subsample(rows, self._max, rng)  # custom callable
 
     def _read(self, src: Source, reps: tuple[str, ...], rows: np.ndarray) -> dict[str, object]:
-        """Read the given global ``rows`` for each rep of a stream (optionally as torch tensors)."""
+        """Read the given global ``rows`` for each rep of a stream (optionally as torch tensors).
+
+        ``reps=()`` reads nothing and returns ``{}`` — a metadata-only stream, contributing just its leaf.
+        On the primary that is a prediction pass with no known target state: every covariate combination
+        enumerated, with linked streams still supplying real cells (e.g. matched controls) as model input.
+        """
         arrays: dict[str, object] = {loc: _read_rows(src.adatas, loc, rows) for loc in reps}
         if self._to == "torch":
             import torch

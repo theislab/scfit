@@ -1,14 +1,6 @@
-r"""Public data spec: the :class:`Stream` consumed by :class:`~scfit.data.Loader`.
-
-Everything is a :class:`Stream` — one streamed population over a source, described by the columns it
-groups on, the representation(s) it reads, its per-group weights, an optional per-group array lookup, and
-(for a matched *link*) the columns it shares with the primary. The loader takes one primary :class:`Stream` plus any number of named linked :class:`Stream`\\s
-and wires them into annbatch samplers directly.
-
-A Stream partitions its source's cells into **leaves** (unique combinations of ``group_by``) with a
-per-combination :data:`Weights` mapping. A weight of 0 (or an absent combination) is
-*excluded* — that IS the selection, native to annbatch's ``ClassSampler``. ``weights=None`` is uniform
-over every group. See ``README.md`` for the model and the cellflow / sc-flow-tools mapping.
+"""Public data spec: the :class:`Stream` that :class:`~scfit.data.Loader` and
+:class:`~scfit.data.EvalLoader` consume, plus the read parameters they share. See ``README.md`` for the
+model and the cellflow / sc-flow-tools mapping.
 """
 
 from __future__ import annotations
@@ -21,8 +13,8 @@ import numpy as np
 
 type Container = ad.AnnData | list[ad.AnnData]
 
-# The selection: a mapping {group -> weight} (a group is a ``group_by`` tuple). A group absent / weight 0
-# is excluded — that IS the selection. ``None`` means uniform over every group.
+# The selection: {group -> weight} (a group is a ``group_by`` tuple). A group absent, or with weight 0, is
+# excluded — that IS the selection, native to annbatch's ClassSampler. ``None`` means uniform over every group.
 Weights = Mapping[tuple, float]
 
 __all__ = ["Container", "SamplerKwargs", "Stream", "Weights", "weight_vector"]
@@ -88,8 +80,10 @@ def weight_vector(weights: Weights | None, leaves: Sequence[tuple]) -> np.ndarra
 class Stream:
     r"""One streamed population: a source, its grouping columns, reps, weights, and read parameters.
 
-    The single public unit :class:`~scfit.data.Loader` consumes. A Stream passed in ``links=`` (with a
-    ``match_on``) is matched batch-for-batch to the primary on the shared ``match_on`` values.
+    The single public unit :class:`~scfit.data.Loader` consumes. It partitions its source's cells into
+    **leaves** — the unique ``group_by`` combinations — and those are what gets weighted, sampled, and
+    reported back per batch. A Stream passed in ``links=`` (with a ``match_on``) is matched batch-for-batch
+    to the primary on the shared ``match_on`` values.
 
     Parameters
     ----------
@@ -105,11 +99,9 @@ class Stream:
         Columns whose unique combinations define the groups sampled (the leaves).
     reps
         Representation location(s) to stream — a loc string ``"X"`` / ``"obsm/<k>"`` / ``"layers/<k>"``, or a
-        tuple of them for several **aligned** reps of the same cells. ``()`` makes the stream
-        **metadata-only**: no cell matrix is ever read and batches carry an empty rep mapping, the stream
-        contributing only its grouping (its ``leaf``). Use it to enumerate covariate combinations with no
-        ground-truth expression — a prediction pass whose target state is unknown. :class:`~scfit.data.EvalLoader`
-        only; the training :class:`~scfit.data.Loader` streams cells and rejects it.
+        tuple of them for several **aligned** reps of the same cells. ``()`` is **metadata-only** — no cell
+        matrix is read and the stream contributes only its leaf, for a prediction pass over covariate
+        combinations with no known target state (:class:`~scfit.data.EvalLoader` only).
     weights
         ``{group: weight}`` (a group is a ``group_by`` tuple); a group absent or with weight 0 is excluded.
         :obj:`None` (default) is uniform over every group present.

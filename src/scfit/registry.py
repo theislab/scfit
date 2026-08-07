@@ -1,17 +1,8 @@
 """The uniform component registry + portable-spec (de)serialization for scfit.
 
-One :class:`Component` base for every registrable/portable thing — sub-components, top-level
-architectures, and objectives all use this same pattern. A concrete config is a plain ``@dataclass`` that
-opts in with two class-header kwargs (``type_id=``, ``version=``/``versions=``) and owns
-``build(self, context) -> runtime``. That single line auto-registers it (no decorator). The
-``{type, version, config}`` envelope, registry dispatch, version check, family check, and unknown-field
-rejection all live here, written once; leaf fields go through ``cattrs`` (so OmegaConf ``ListConfig`` /
-``DictConfig`` values coerce natively).
-
-This is scfit's shared foundation: the flow toolbox (``sc_flow``), foundation toolboxes, and any other
-ecosystem plugin subclass :class:`Component` from here, so specs are portable across packages. See the
-design decision for the rationale (no pydantic/msgspec: this is a public foundation that downstream
-packages subclass, so keep the dependency surface minimal and the on-disk format stable).
+One :class:`Component` base for every registrable/portable thing — sub-components, top-level architectures
+and objectives all use the same pattern. This is scfit's shared foundation: the flow toolbox (``sc_flow``),
+foundation toolboxes and any other ecosystem plugin subclass it, so specs stay portable across packages.
 """
 
 from __future__ import annotations
@@ -20,6 +11,9 @@ import dataclasses
 from collections.abc import Mapping
 from typing import Any, ClassVar, get_args, get_type_hints
 
+# Deliberately cattrs, not pydantic/msgspec: this is a public foundation downstream packages subclass, so
+# the dependency surface stays minimal and the on-disk format stable. It also coerces OmegaConf
+# ListConfig/DictConfig leaf values natively. See the design decision for the full rationale.
 import cattrs
 
 __all__ = ["Component", "PortabilityError", "to_spec", "parse", "build", "register_live"]

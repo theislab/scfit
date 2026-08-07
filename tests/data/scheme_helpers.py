@@ -1,19 +1,8 @@
 """Shared perturbation-test fixtures: the ``Stream``/``Loader`` builders + the tiny AnnData makers.
 
 All test-only. A perturbation dataset is the product of cell lines × drugs, with ``control`` marking the
-control drug:
-
-* :func:`encoded_adata` — X *encodes each cell's identity* (``[cell_line, drug, is_control, row_id]``, see
-  the :data:`LINE`/:data:`DRUG`/:data:`IS_CONTROL`/:data:`ROW_ID` column indices), so a yielded batch row
-  can be decoded and checked against the label it must belong to.
-* :func:`feature_adata` — a realistic random matrix, for pickle / metric tests that don't decode identity.
-* :func:`perturbation_streams` / :func:`perturbation_loader` — the ``primary`` (perturbed) + matched
-  ``ctrl`` (control) streams over any such source, the control linked to the primary on ``context``.
-
-Batch schema (new API): ``{stream name: {rep loc: rows}}`` for ``"primary"`` and each link, plus
-``"leaves"`` (the ``group_by`` tuple each stream drew this batch).
-
-Importable bare (``from scheme_helpers import ...``) via the ``pythonpath = ["tests/data"]`` pytest setting.
+control drug. Importable bare (``from scheme_helpers import ...``) via the ``pythonpath = ["tests/data"]``
+pytest setting.
 """
 
 from __future__ import annotations

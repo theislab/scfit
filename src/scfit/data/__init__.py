@@ -1,13 +1,8 @@
-r"""Declarative, index-free class-mapping data loading over annbatch.
+"""Declarative, index-free class-mapping data loading over annbatch.
 
-Everything is a :class:`Stream` — one streamed population over a source. :class:`Loader` takes the
-``sources`` mapping, one primary Stream, and any number of named linked Streams, and yields matched batches
-keyed by stream name (``{stream name: {rep loc: rows}}``, plus ``"leaves"``): the primary is the target,
-each link a source drawn from the same ``match_on`` context. No row indices are exposed.
-
-Pass in-memory ``AnnData`` (or a list) directly under each ``source_key``, or use :meth:`Loader.from_paths`
-to open zarr path(s) backed. Each key resolves to a ``Source`` owning that dataset's obs factorization,
-shared by every stream naming the key.
+Everything is a :class:`Stream` — one streamed population over a source. :class:`Loader` yields stochastic
+matched batches for training and :class:`EvalLoader` a deterministic full-coverage pass; both key their
+output by stream name and expose no row indices.
 """
 
 from scfit.data._eval import EvalLoader
