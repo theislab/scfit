@@ -1,6 +1,8 @@
 """``Loader`` — streams matched batches from one primary :class:`Stream` plus named linked streams.
 
-Each pass is a fresh epoch. The primary draws a per-batch class schedule ∝ its weights via an annbatch
+The loader is an infinite stream, rolling a fresh epoch each pass; :meth:`Loader.set_n_iters` sets a pause
+point (a StopIteration every ``n_iters`` batches) without perturbing the schedule, so consecutive passes
+resume rather than replay. The primary draws a per-batch class schedule ∝ its weights via an annbatch
 :class:`~annbatch.samplers.ClassSampler`; every link replays that schedule onto its own cells via a
 :class:`~annbatch.samplers.BoundClassSampler` — matched by *label* on its ``match_on`` columns (select via
 the link's weights + project via ``match_on``). A batch is ``{stream name: {rep loc: rows}}`` for the
@@ -55,12 +57,9 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
-        n_iters: int | None = None,
         **sampler_kwargs: Unpack[SamplerKwargs],
     ) -> None:
         _check_sampler(sampler_kwargs, "Loader")
-        if n_iters is not None and n_iters < 1:
-            raise ValueError(f"n_iters must be a positive integer or None (got {n_iters!r}).")
         links = dict(links or {})
         validate_links(primary, links)
         self._streams: dict[str, Stream] = {_PRIMARY: primary, **links}
@@ -110,12 +109,12 @@ class Loader:
             self._st[name] = {"leaves": f.leaves, "w": weight_vector(s.weights, f.leaves), "cats": f.cats}
         self._validate_label_lookups()
 
-        # Default pass length: primary rows // its batch_size. ``n_iters`` overrides it — a finite loader
-        # yields exactly n_iters batches then stops; None ⇒ infinite, rolling a fresh epoch each pass.
+        # Epoch length: primary rows // its batch_size. The underlying stream is *always* infinite — it rolls
+        # a fresh epoch of this length each pass — and ``n_iters`` never touches the samplers, so the schedule
+        # is independent of any cap.
         n_root_obs = len(self._st[_PRIMARY]["cats"])
-        self.n_batches = max(1, n_root_obs // self._root_batch_size)
-        self.n_iters = n_iters
-        self._pass_len = n_iters if n_iters is not None else self.n_batches
+        self.n_batches = self._pass_len = max(1, n_root_obs // self._root_batch_size)
+        self.n_iters: int | None = None
 
         # The primary's sampler is the oracle; the primary's reps and each link's inner all deepcopy it.
         self._oracle_sampler = self._new_class_sampler(_PRIMARY)
@@ -129,7 +128,20 @@ class Loader:
             self._loaders[name] = self._build_per_rep_loaders(name, sampler)
 
         self._iters: dict[str, dict[str, Iterator[dict]]] | None = None
-        self._pos = 0
+        self._pos = 0  # position within the current epoch (drives the epoch roll)
+        self._since_pause = 0  # batches yielded since the last StopIteration, vs ``n_iters``
+
+    def set_n_iters(self, n_iters: int | None) -> Loader:
+        """Yield ``n_iters`` batches per pass (``None`` ⇒ never stop). Returns ``self``.
+
+        This is a *pause point*, not a restart: the underlying stream is one infinite schedule, so after a
+        pass ends the next ``for`` loop resumes where it left off rather than replaying the same batches.
+        """
+        if n_iters is not None and n_iters < 1:
+            raise ValueError(f"n_iters must be a positive integer or None (got {n_iters!r}).")
+        self.n_iters = n_iters
+        self._since_pause = 0
+        return self
 
     # ── construction ─────────────────────────────────────────────────────────
     @classmethod
@@ -142,7 +154,6 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
-        n_iters: int | None = None,
         **sampler_kwargs: Unpack[SamplerKwargs],
     ) -> Loader:
         """Build a :class:`Loader` from zarr ``{source_key: path | [paths]}``, opened backed.
@@ -169,7 +180,6 @@ class Loader:
             seed=seed,
             to=to,
             preload_to_gpu=preload_to_gpu,
-            n_iters=n_iters,
             **sampler_kwargs,
         )
 
@@ -255,11 +265,8 @@ class Loader:
     def __iter__(self) -> Loader:
         return self
 
-    def __len__(self) -> int:
-        """The finite batch count ``n_iters``; an infinite loader (``n_iters is None``) has no length."""
-        if self.n_iters is None:
-            raise TypeError("infinite Loader has no len() — set n_iters for a finite loader.")
-        return self.n_iters
+    # ponytail: no __len__ — the loader is an infinite stream that ``n_iters`` merely pauses, and a len()
+    # that raises half the time is worse than none. Read ``n_iters`` / ``n_batches`` directly if you need a count.
 
     def _stream_next(self, name: str) -> tuple[dict, object]:
         """A stream's aligned reps ``{rep loc: rows}`` plus its per-batch ``label`` (category label).
@@ -278,16 +285,19 @@ class Loader:
         return leaf if name == _PRIMARY else leaf[len(self._streams[name].match_on) :]
 
     def __next__(self) -> dict[str, dict]:
-        if self.n_iters is not None and self._pos >= self.n_iters:
-            raise StopIteration  # finite loader: exactly n_iters batches, then done
-        if self._iters is None or (self.n_iters is None and self._pos >= self._pass_len):
+        if self.n_iters is not None and self._since_pause >= self.n_iters:
+            self._since_pause = 0  # pause here; the next pass resumes the same stream, it does not replay
+            raise StopIteration
+        if self._iters is None or self._pos >= self._pass_len:
             # (Re)build one iterator per stream/rep from the advancing sampler RNG — a fresh reproducible
-            # epoch (first pass, next epoch, or resume after unpickling). A finite loader builds it once.
+            # epoch (first pass, next epoch, or resume after unpickling). Independent of ``n_iters``: a pause
+            # mid-epoch leaves ``_pos`` alone, so the next pass picks the epoch up where it stopped.
             self._iters = {
                 name: {loc: iter(ld) for loc, ld in loaders.items()} for name, loaders in self._loaders.items()
             }
             self._pos = 0
         self._pos += 1
+        self._since_pause += 1
 
         # One entry per streamed stream, keyed by name: the primary is the target, each link a source.
         out: dict = {}
