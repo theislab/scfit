@@ -55,7 +55,7 @@ def test_reps_from_distinct_stores_are_the_same_cells():
     rid = adata.X[:, ROW_ID]
     adata.obsm["rep"] = np.stack([rid, -rid], axis=1).astype("float32")
     loader = perturbation_loader(adata, rep=("X", "obsm/rep"), ctrl_rep="X")
-    for _ in range(loader._n_batches):
+    for _ in range(loader.n_batches):
         reps = next(iter(loader))["primary"]
         x, r = np.asarray(reps["X"]), np.asarray(reps["obsm/rep"])
         np.testing.assert_array_equal(r[:, 0], x[:, ROW_ID])  # same cell per position (row-for-row)

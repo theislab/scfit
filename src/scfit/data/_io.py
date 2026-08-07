@@ -54,13 +54,10 @@ def get_from_container(source: ad.AnnData | list[ad.AnnData], loc: str) -> list[
 def _read_rows(source: Container, loc: str, row_idx: np.ndarray) -> np.ndarray:
     r"""Densely read the global rows ``row_idx`` (ascending, unique) of rep ``loc`` from a source's backings.
 
-    Each maximal run of *consecutive* rows is read as a **slice** (``b[start:stop]`` — one contiguous I/O)
-    rather than a scattered fancy-index gather. ``materialize_node`` selects whole positive-weight leaves,
-    so on a source laid out by the node's ``cols`` (the grouping the whole design assumes — see
-    ``chunk_size``) the selection collapses to a handful of long runs: a few big slice reads instead of a
-    per-row gather. Fully scattered rows degrade to one slice per row — no worse in row count, and still
-    correct. Slicing reads uniformly across dense zarr arrays, backed ``CSRDataset``\\s and in-memory
-    scipy/numpy, so no per-backend indexing branch is needed.
+    Each maximal run of *consecutive* rows is read as one contiguous slice (``b[start:stop]``), not a
+    scattered fancy-index gather — so a leaf-contiguous layout collapses to a few big reads, and fully
+    scattered rows degrade to one slice per row (still correct). Slicing reads uniformly across dense zarr,
+    backed ``CSRDataset``\\s and in-memory arrays, so no per-backend indexing branch is needed.
     """
     backings = get_from_container(source, loc)  # each has ``.shape`` (sparse groups already wrapped by read_backing)
     offs = np.concatenate([[0], np.cumsum([b.shape[0] for b in backings])]).astype(np.int64)
@@ -80,17 +77,14 @@ def materialize_node(
 ) -> tuple[ad.AnnData, np.ndarray, list[tuple]]:
     """Materialize a stream's selected (positive-weight) cells into an in-memory (dense) ``AnnData``.
 
-    The "read this stream's cells into RAM" op behind :attr:`~scfit.data.Stream.in_memory`: reads only the
-    rows whose leaf has positive weight — for each of the stream's reps (``rep``) — and sorts them by
-    ``group_by`` so ``chunk_size > 1`` still reads contiguous runs. Handles dense and sparse (CSR-group)
-    backings alike. Cells must fit host RAM (the intended use is a small, frequently re-drawn population
-    such as matched controls).
+    Behind :attr:`~scfit.data.Stream.in_memory`: reads only the positive-weight rows (for each rep) and
+    sorts them by ``group_by`` so ``chunk_size > 1`` still reads contiguous runs. Dense and sparse (CSR
+    group) alike. Cells must fit host RAM (intended for a small, frequently re-drawn population, e.g.
+    matched controls).
 
-    Returns the materialized ``AnnData`` together with *its* ``(codes, leaves)`` factorization — the caller
-    (the loader's sampler) needs the subset's categorical, and it is derived here from the source
-    factorization rather than re-factorizing the subset obs. Pass ``factorization`` — the source's
-    :func:`leaf_codes` over ``group_by`` — to reuse a cached one (the source obs is then never factorized a
-    second time); omit it and it is computed here for standalone use.
+    Also returns the subset's ``(codes, leaves)`` — the caller's sampler needs the subset categorical, and
+    it's derived from ``factorization`` (the source's cached ``leaf_codes`` over ``group_by``) when given,
+    avoiding a re-factorize; omit it for standalone use.
     """
     cols = stream.group_by
     obs = obs_columns(source, cols)
@@ -108,10 +102,8 @@ def materialize_node(
             field, sub = loc.split("/", 1)  # "obsm/<k>" | "layers/<k>"
             getattr(adata, field)[sub] = v
     # Subset (codes, leaves) derived from the parent factorization — no re-factorize. Parent ``leaves`` are
-    # string-key sorted, so the ascending distinct parent codes present in the subset already give the
-    # subset's leaves in that same order, and searchsorted compacts parent codes -> subset codes. This is
-    # byte-identical to ``leaf_codes(sub_obs, node.cols)`` (same string-sorted order, same ``.to_numpy()``
-    # dtypes, since ``sub_obs`` is a row-subset of the very obs ``leaves`` came from).
+    # string-sorted, so the distinct parent codes present (ascending) are already the subset's leaves in that
+    # order, and searchsorted compacts parent → subset codes. Byte-identical to leaf_codes(sub_obs, cols).
     sel = codes[row_idx][order]  # parent leaf code per subset row, in the materialized (sorted) order
     present = np.unique(sel)  # ascending == string-sorted order of the parent leaves
     sub_leaves = [leaves[c] for c in present]
@@ -122,15 +114,13 @@ def materialize_node(
 def leaf_codes(obs: pd.DataFrame, cols: Sequence[str]) -> tuple[np.ndarray, list[tuple]]:
     """Per-cell leaf code + the ordered leaf combinations (the grouping over ``cols``).
 
-    ``leaves`` are the unique ``cols`` combinations as ``.to_numpy()``-typed tuples — the *same*
-    construction the ``{combo: weight}`` mappings use, so a leaf hash-equals its weight key — ordered by
-    per-element string key. ``codes[i]`` indexes ``leaves`` for cell ``i``.
+    ``leaves`` are the unique ``cols`` combinations as ``.to_numpy()``-typed tuples — the same construction
+    the ``{combo: weight}`` mappings use, so a leaf hash-equals its weight key — ordered by per-element
+    string key; ``codes[i]`` indexes ``leaves``.
 
-    Vectorized: the rows are factorized once at C level (no per-cell Python loop) and the raw factorize
-    codes are remapped onto the string-sorted leaf order. Grouping columns are cast to ``category`` first
-    so the factorize hashes small integer codes rather than raw (string) values — a pure speed lever, the
-    returned ``(codes, leaves)`` are identical either way (already-categorical columns are left as-is, so
-    a column's category order — hence the leaf order — is untouched).
+    Vectorized: rows are factorized once at C level and remapped onto the string-sorted leaf order. Grouping
+    columns are cast to ``category`` first (a pure speed lever — the returned ``(codes, leaves)`` are
+    identical either way).
     """
     cols = list(cols)
     sub = obs[cols]
@@ -138,10 +128,9 @@ def leaf_codes(obs: pd.DataFrame, cols: Sequence[str]) -> tuple[np.ndarray, list
     leaves = sorted((tuple(r) for r in sub.drop_duplicates().to_numpy()), key=lambda t: tuple(map(str, t)))
     if len(sub) == 0:
         return np.zeros(0, dtype=np.int64), leaves
-    # Per-column categorical codes + mixed-radix combine → a raw per-cell group code, WITHOUT materializing
-    # ~N object tuples (the old `pd.factorize(pd.MultiIndex.from_frame(...))` spent most of its time in
-    # `MultiIndex._values` building N tuples). Cast only non-categorical cols (keeps existing category
-    # orders); a column's NaN is code -1, shifted to slot 0 so it owns a distinct combination.
+    # Per-column categorical codes + mixed-radix combine → a raw per-cell group code without materializing
+    # ~N object tuples. Cast only non-categorical cols (keeps existing category orders); a column's NaN is
+    # code -1, shifted to slot 0 so it owns a distinct combination.
     cats = [sub[c] if isinstance(sub[c].dtype, pd.CategoricalDtype) else sub[c].astype("category") for c in cols]
     ncards = [len(c.cat.categories) + 1 for c in cats]
     prod = 1
@@ -158,10 +147,9 @@ def leaf_codes(obs: pd.DataFrame, cols: Sequence[str]) -> tuple[np.ndarray, list
         raw = pd.factorize(
             pd.MultiIndex.from_frame(pd.DataFrame({c: cats[i] for i, c in enumerate(cols)})), use_na_sentinel=False
         )[0]
-    # Remap raw group codes → string-sorted leaf codes. The per-group representative is read back through
-    # `.to_numpy()` (like `leaves`), so both sides share the same dtype promotion (e.g. mixed int/float →
-    # float) and NaN normalizes to "nan" on both — the raw factorize `uniques` would not (it keeps each
-    # column's own dtype), which is why we key off representative rows, not `uniques`.
+    # Remap raw group codes → string-sorted leaf codes, keying off each group's representative row read back
+    # through `.to_numpy()` (like `leaves`) — so both share the same dtype promotion and NaN→"nan"
+    # normalization that the raw factorize `uniques` (keeping per-column dtypes) would not.
     _, first_idx = np.unique(raw, return_index=True)  # first row of each group code g = 0..G-1
     reps = sub.iloc[first_idx].to_numpy()
     key_to_code = {tuple(map(str, lf)): i for i, lf in enumerate(leaves)}
@@ -183,12 +171,10 @@ def obs_columns(source: Container, cols: Sequence[str]) -> pd.DataFrame:
 def _align_categoricals(frames: list[pd.DataFrame]) -> None:
     """Align each column that is categorical in *every* frame to the union of its categories, in place.
 
-    ``pd.concat`` upcasts categoricals with mismatched categories to ``object`` — so concatenating
-    per-source obs whose category sets differ (e.g. per-plate drugs/cell-lines) turns the grouping
-    columns into strings, and every downstream consumer (:func:`leaf_codes`, the samplers) then
-    re-factorizes ~N-cell string columns. Setting the union categories first keeps the concat
-    categorical (integer codes), which is both faster and lower-memory. No-op for <2 frames or for
-    columns that aren't categorical everywhere. Cheap: obs cols are already in memory; only codes remap.
+    ``pd.concat`` upcasts categoricals with mismatched categories to ``object``, so per-source obs with
+    differing category sets would turn grouping columns into strings and force a re-factorize downstream.
+    Setting the union categories first keeps integer codes (faster, lower-memory). No-op for <2 frames or
+    columns not categorical everywhere.
     """
     from pandas.api.types import union_categoricals
 
@@ -206,14 +192,10 @@ def _align_categoricals(frames: list[pd.DataFrame]) -> None:
 def _read_obs_cols(obs_group, cols: Sequence[str]) -> pd.DataFrame:
     """Read only ``cols`` from a zarr obs group as a pandas frame — no full read, no xarray ``Dataset2D``.
 
-    ``read_elem(obs_group)`` would decode every column; ``read_lazy`` would yield an xarray-backed
-    ``Dataset2D``. Instead read each requested column element on its own (each ``read_elem`` reconstructs
-    its dtype — categoricals included), so unused obs columns are never touched.
-
-    The obs **index** is deliberately NOT read: it is frequently a large object/string barcode array
-    (e.g. Tahoe's ~1.4GB over 90M cells) and nothing downstream uses it — ``leaf_codes`` keys off the
-    columns and ``materialize_node`` ``reset_index(drop=True)``. The frame gets a default ``RangeIndex``
-    (row position), which is all any consumer relies on. (Pass ``cols=()`` for the full obs incl. index.)
+    ``read_elem(obs_group)`` decodes every column; ``read_lazy`` yields an xarray ``Dataset2D``. Instead each
+    requested column is read on its own (``read_elem`` reconstructs its dtype). The obs **index** is
+    deliberately not read — often a large barcode array (Tahoe: ~1.4GB over 90M cells) that nothing
+    downstream uses; the frame gets a default ``RangeIndex``. (Pass ``cols=()`` for the full obs incl. index.)
     """
     if not cols:
         return ad.io.read_elem(obs_group)

@@ -7,25 +7,24 @@ files, so a leaf that lives in only one file resolves to that file when sampled 
 
 That list order is a **load-bearing invariant** — :meth:`factorize` (obs concat) and :meth:`rep` (backings)
 must iterate ``adatas`` in the same order, or a leaf code would point at the wrong file. The factorization
-is cached per ``group_by``, so several streams naming this ``source_key`` factorize it only once (a primary
-and its matched control over one dataset); an in-memory dataset is now deduped this way too — the old cache
-was keyed by zarr path and skipped in-memory sources.
+is cached per ``group_by``, so several streams naming this ``source_key`` factorize it only once.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, NamedTuple
 
 import anndata as ad
 import numpy as np
 import pandas as pd
 
-from scfit.data._io import get_from_container, is_backed_array, leaf_codes, materialize_node, obs_columns
+from scfit.data._io import get_from_container, leaf_codes, materialize_node, obs_columns
 
 if TYPE_CHECKING:
-    from scfit.data._schema import Stream
+    from scfit.data._schema import Container, Stream
 
-__all__ = ["Source"]
+__all__ = ["Source", "build_sources", "resolve_source"]
 
 
 class _Factorized(NamedTuple):
@@ -71,9 +70,8 @@ class Source:
     def rep(self, loc: str) -> list:
         """The array(s) backing rep ``loc``, one per AnnData in list order — with a shared-width check.
 
-        A streamed rep is stacked into one batch array by annbatch, so its ``shape[1]`` must agree across the
-        dataset's files. Differing raw gene counts are fine as long as the *streamed* rep is aligned (e.g. a
-        shared ``obsm`` embedding); a genuine mismatch raises here rather than deep inside annbatch.
+        annbatch stacks a streamed rep into one array, so its ``shape[1]`` must agree across the dataset's
+        files; a mismatch raises here rather than deep inside annbatch.
         """
         backings = get_from_container(self._adatas, loc)
         widths = {int(b.shape[1]) for b in backings}
@@ -84,10 +82,6 @@ class Source:
                 "space — e.g. a shared obsm embedding or a common gene panel — or use separate source_keys)."
             )
         return backings
-
-    def in_memory(self, loc: str) -> bool:
-        """True if rep ``loc`` is backed by in-memory arrays (→ annbatch ``add_adatas``), not on-disk backings."""
-        return not is_backed_array(self.rep(loc)[0])
 
     def materialize(self, stream: Stream) -> Source:
         """A new :class:`Source` holding this stream's selected (positive-weight) cells in RAM.
@@ -102,6 +96,35 @@ class Source:
         sub._leaf_cache[tuple(stream.group_by)] = _Factorized(codes, leaves, cats)
         return sub
 
-    def clear_cache(self) -> None:
-        """Drop the factorization cache (the codes are redundant once a Loader has built its samplers)."""
-        self._leaf_cache = {}
+    def __getstate__(self) -> dict:
+        """Pickle without the factorization cache — the per-cell ``codes`` are large and rebuildable.
+
+        Only the serialized copy drops it (the live object keeps its cache), so a checkpointed
+        :class:`~scfit.data.Loader` doesn't carry each source's ``codes`` array; :meth:`factorize`
+        recomputes on demand — which resume never needs, since it replays from the samplers.
+        """
+        return {**self.__dict__, "_leaf_cache": {}}
+
+
+def build_sources(sources: Mapping[str, Container]) -> dict[str, Source]:
+    """One :class:`Source` per ``source_key`` from a loader's ``sources`` mapping."""
+    return {k: Source(v) for k, v in dict(sources).items()}
+
+
+def resolve_source(
+    sources: dict[str, Source], stream: Stream, cache: dict[tuple[str, ...], Source] | None = None
+) -> Source:
+    """The Source a stream reads from: its single Source, or a unified Source over several ``source_keys``.
+
+    Several keys are concatenated (in key order) into one Source — one categorical universe, one set of
+    backings — so each leaf still resolves to whichever dataset holds it. Optionally cached by key-tuple so
+    streams sharing the same set reuse it.
+    """
+    keys = stream.source_keys
+    if len(keys) == 1:
+        return sources[keys[0]]
+    if cache is None:
+        cache = {}
+    if keys not in cache:
+        cache[keys] = Source([a for k in keys for a in sources[k].adatas])
+    return cache[keys]

@@ -2,12 +2,11 @@ r"""Public data spec: the :class:`Stream` consumed by :class:`~scfit.data.Loader
 
 Everything is a :class:`Stream` — one streamed population over a source, described by the columns it
 groups on, the representation(s) it reads, its per-group weights, an optional per-group array lookup, and
-(for a matched *link*) the columns it shares with the primary. There is no separate node / bind / scheme
-object: the loader takes one primary :class:`Stream` plus any number of named linked :class:`Stream`\\s
+(for a matched *link*) the columns it shares with the primary. The loader takes one primary :class:`Stream` plus any number of named linked :class:`Stream`\\s
 and wires them into annbatch samplers directly.
 
 A Stream partitions its source's cells into **leaves** (unique combinations of ``group_by``) with a
-per-combination :data:`Weights` mapping. A weight of 0 (or a combination absent from the mapping) is
+per-combination :data:`Weights` mapping. A weight of 0 (or an absent combination) is
 *excluded* — that IS the selection, native to annbatch's ``ClassSampler``. ``weights=None`` is uniform
 over every group. See ``README.md`` for the model and the cellflow / sc-flow-tools mapping.
 """
@@ -30,6 +29,9 @@ __all__ = ["Container", "SamplerKwargs", "Stream", "Weights", "weight_vector"]
 
 # The annbatch read parameters, defined once (via ``Unpack[SamplerKwargs]``) for both Stream and Loader.
 _SAMPLER_KEYS = ("batch_size", "chunk_size", "preload_nchunks")
+
+# Reserved name of the root / target (primary) stream — shared by Loader and EvalLoader.
+_PRIMARY = "primary"
 
 
 class SamplerKwargs(TypedDict, total=False):
@@ -168,3 +170,19 @@ class Stream:
         self.match_on = tuple(match_on)
         self.in_memory = in_memory
         self.sampler_kwargs: dict[str, int] = dict(sampler_kwargs)  # {} (inherit) or all three (see _check_sampler)
+
+
+def validate_links(primary: Stream, links: Mapping[str, Stream]) -> None:
+    """Reserved-name + ``match_on`` ⊆ shared-columns checks for a primary and its links.
+
+    Shared by :class:`~scfit.data.Loader` and :class:`~scfit.data.EvalLoader`.
+    """
+    if _PRIMARY in links:
+        raise ValueError(f"link name {_PRIMARY!r} is reserved for the primary stream.")
+    for name, link in links.items():
+        shared = set(primary.group_by) & set(link.group_by)
+        if not set(link.match_on) <= shared:
+            raise ValueError(
+                f"stream {name!r} match_on {link.match_on} must be ⊆ the columns it shares "
+                f"with the primary ({sorted(shared)})."
+            )
