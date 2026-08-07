@@ -2,12 +2,11 @@
 
 The Stream cases are data-free ``__init__`` guards. The Loader cases build a tiny in-memory loader to
 exercise the resolution rules (a stream's own sampler kwargs win; else the loader's; else error) and the
-cross-stream guards (reserved name, match_on ⊆ shared, in_memory ⇒ chunk_size=1, label_lookup coverage).
+cross-stream guards (reserved name, match_on ⊆ shared, in_memory ⇒ chunk_size=1) and the per-batch leaves.
 """
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 from scheme_helpers import KEY, encoded_adata, uniform
 
@@ -24,6 +23,12 @@ SAMPLER = {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
 def test_rep_normalizes_to_tuple():
     assert Stream("k", group_by=COLS, reps="X").reps == ("X",)  # a bare loc string becomes a 1-tuple
     assert Stream("k", group_by=COLS, reps=("X", "obsm/rep")).reps == ("X", "obsm/rep")
+    assert Stream("k", group_by=COLS, reps=()).reps == ()  # metadata-only (EvalLoader)
+
+
+def test_metadata_only_stream_rejected_by_training_loader():
+    with pytest.raises(ValueError, match="EvalLoader-only"):
+        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W, reps=()), **SAMPLER, seed=0)
 
 
 def test_source_key_must_be_non_empty_string():
@@ -40,12 +45,6 @@ def test_source_key_must_be_non_empty_string():
         pytest.param({"group_by": COLS, "reps": ("X", "")}, ValueError, "loc strings", id="one_empty_rep"),
         pytest.param({"group_by": COLS, "weights": {("A",): 1.0}}, ValueError, "arity", id="weight_arity"),
         pytest.param({"group_by": COLS, "weights": {("A", "d1"): -1.0}}, ValueError, "non-negative", id="neg_weight"),
-        pytest.param(
-            {"group_by": COLS, "label_lookup": {("A",): {"c": np.zeros((1, 1))}}},
-            ValueError,
-            "label_lookup key",
-            id="label_lookup_arity",
-        ),
         # sampler kwargs are all-or-nothing on a Stream
         pytest.param({"group_by": COLS, "batch_size": 8}, ValueError, "all-or-nothing", id="partial_one"),
         pytest.param(
@@ -125,11 +124,15 @@ def test_in_memory_requires_chunk_one():
         )
 
 
-def test_label_lookup_must_cover_positive_weight_labels():
-    with pytest.raises(ValueError, match="label_lookup misses positive-weight"):
-        Loader(
-            SRC,
-            primary=Stream(KEY, group_by=COLS, weights=W, label_lookup={("A", "d1"): {"c": np.zeros((1, 1))}}),
-            **SAMPLER,
-            seed=0,
-        )
+def test_every_stream_reports_its_leaf():
+    """``batch["leaves"]`` covers every stream — no opt-in, so consumers can key their own side arrays."""
+    ld = Loader(
+        SRC,
+        primary=Stream(KEY, group_by=COLS, weights=W),
+        links={"c": Stream(KEY, group_by=COLS, weights=W, match_on=("cell_line",))},
+        **SAMPLER,
+        seed=0,
+    )
+    leaves = next(iter(ld))["leaves"]
+    assert set(leaves) == {"primary", "c"}
+    assert all(len(lf) == len(COLS) and lf in W for lf in leaves.values())

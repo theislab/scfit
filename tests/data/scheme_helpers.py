@@ -10,8 +10,8 @@ control drug:
 * :func:`perturbation_streams` / :func:`perturbation_loader` — the ``primary`` (perturbed) + matched
   ``ctrl`` (control) streams over any such source, the control linked to the primary on ``context``.
 
-Batch schema (new API): ``{stream name: {rep loc: rows}}`` for ``"primary"`` and each link, plus optional
-``"labels"`` (per-stream ``{realm: array}`` for streams given a ``label_lookup``).
+Batch schema (new API): ``{stream name: {rep loc: rows}}`` for ``"primary"`` and each link, plus
+``"leaves"`` (the ``group_by`` tuple each stream drew this batch).
 
 Importable bare (``from scheme_helpers import ...``) via the ``pythonpath = ["tests/data"]`` pytest setting.
 """
@@ -129,20 +129,6 @@ def write_zarr(adata: ad.AnnData, path) -> str:
     return str(path)
 
 
-def perturbation_labels(lines: Sequence[str] = LINES, drugs: Sequence[str] = DRUGS) -> dict:
-    """A ``label_lookup`` for the primary: ``{(cell_line, drug): {"condition": [[line_code, drug_code]]}}``.
-
-    Covers exactly the perturbed labels (drug != control) — the primary's positive-weight groups.
-    """
-    _LINE, _DRUG = codes(lines), codes(drugs)
-    return {
-        (cl, dr): {"condition": np.array([[_LINE[cl], _DRUG[dr]]], dtype=np.int64)}
-        for cl in lines
-        for dr in drugs
-        if dr != CONTROL
-    }
-
-
 def perturbation_streams(
     source,
     *,
@@ -153,14 +139,13 @@ def perturbation_streams(
     ctrl_rep: str | Sequence[str] | None = None,
     ctrl_in_memory: bool = False,
     ctrl_match_on: Sequence[str] | None = None,
-    label_lookup: Mapping | None = None,
 ) -> tuple[Stream, dict[str, Stream]]:
     """The two streams — ``primary`` (perturbed) and linked ``ctrl`` (control) — matched on ``context``.
 
     Control vs perturbed is encoded purely by which combinations carry weight (uniform over each side).
     Returns ``(primary, {"ctrl": ...})`` — splat into :class:`~scfit.data.Loader`. ``ctrl_match_on``
     overrides the control's ``match_on`` (default = ``context``; pass ``()`` for an unconditional control).
-    ``label_lookup`` is attached to the primary; ``ctrl_in_memory`` materializes the control cells.
+    ``ctrl_in_memory`` materializes the control cells.
     """
     context, perturbation = tuple(context), tuple(perturbation)
     control_values = {"drug": CONTROL} if control_values is None else dict(control_values)
@@ -174,7 +159,7 @@ def perturbation_streams(
 
     pert = [c for c in combos if not is_control(c)]
     ctrl = [c for c in combos if is_control(c)]
-    primary = Stream(KEY, group_by=cols, reps=rep, weights=uniform(pert), label_lookup=label_lookup)
+    primary = Stream(KEY, group_by=cols, reps=rep, weights=uniform(pert))
     control = Stream(
         KEY, group_by=cols, reps=ctrl_rep, weights=uniform(ctrl), match_on=match_on, in_memory=ctrl_in_memory
     )

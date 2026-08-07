@@ -6,8 +6,9 @@ resume rather than replay. The primary draws a per-batch class schedule ∝ its 
 :class:`~annbatch.samplers.ClassSampler`; every link replays that schedule onto its own cells via a
 :class:`~annbatch.samplers.BoundClassSampler` — matched by *label* on its ``match_on`` columns (select via
 the link's weights + project via ``match_on``). A batch is ``{stream name: {rep loc: rows}}`` for the
-primary and every link, plus ``"labels"`` (the current label's arrays for every stream with a
-``label_lookup``). Every sampler that must agree within a pass (the schedule oracle, the primary's reps,
+primary and every link, plus ``"leaves"`` — ``{stream name: <group_by tuple>}``, the group each stream drew.
+Side arrays keyed by group (a perturbation encoding, a dose vector) are the *consumer's*: index them with
+that leaf. Every sampler that must agree within a pass (the schedule oracle, the primary's reps,
 each link's inner) is a ``deepcopy`` of one seeded oracle, so they stay in lockstep, a stream's reps read
 the same rows, and a pickled loader resumes the same stream.
 
@@ -46,7 +47,7 @@ __all__ = ["Loader"]
 
 
 class Loader:
-    """Yields ``{stream name: {rep loc: rows}}`` (+ ``"labels"``) — the primary plus its matched links."""
+    """Yields ``{stream name: {rep loc: rows}}`` (+ ``"leaves"``) — the primary plus its matched links."""
 
     def __init__(
         self,
@@ -76,6 +77,14 @@ class Loader:
         # Resolve sampler kwargs per stream: the stream's own win; else the loader's; else error.
         self._cfg: dict[str, dict[str, int]] = {}
         for name, s in self._streams.items():
+            if not s.reps:
+                # ponytail: no metadata-only training stream — the per-rep annbatch loaders ARE what advances
+                # the sampler, so a repless stream would yield {} forever (and no label). Wire the sampler up
+                # standalone if a label-only training stream ever has a use.
+                raise ValueError(
+                    f"stream {name!r} has no reps: metadata-only streams are EvalLoader-only (the training "
+                    "Loader streams cells). Give it a rep, or iterate it with EvalLoader."
+                )
             eff = dict(s.sampler_kwargs or sampler_kwargs)
             if not eff:
                 raise ValueError(
@@ -107,7 +116,6 @@ class Loader:
             f = src.factorize(s.group_by)
             self._resolved[name] = src
             self._st[name] = {"leaves": f.leaves, "w": weight_vector(s.weights, f.leaves), "cats": f.cats}
-        self._validate_label_lookups()
 
         # Epoch length: primary rows // its batch_size. The underlying stream is *always* infinite — it rolls
         # a fresh epoch of this length each pass — and ``n_iters`` never touches the samplers, so the schedule
@@ -237,16 +245,6 @@ class Loader:
             )
         return loaders
 
-    def _validate_label_lookups(self) -> None:
-        """Strict coverage: a stream's ``label_lookup`` must cover its positive-weight leaves (no silent gaps)."""
-        for name, s in self._streams.items():
-            if s.label_lookup is None:
-                continue
-            leaves, weights = self._st[name]["leaves"], self._st[name]["w"]
-            missing = [lf for lf, w in zip(leaves, weights, strict=True) if w > 0 and lf not in s.label_lookup]
-            if missing:
-                raise ValueError(f"stream {name!r}: label_lookup misses positive-weight leaves {missing}.")
-
     # ── pickling ─────────────────────────────────────────────────────────────
     def __getstate__(self) -> dict[str, object]:
         """Pickle without the live annbatch iterators (generators aren't picklable).
@@ -301,15 +299,9 @@ class Loader:
 
         # One entry per streamed stream, keyed by name: the primary is the target, each link a source.
         out: dict = {}
-        label_of: dict = {}
+        leaves: dict = {}
         for name in (_PRIMARY, *self._links):
-            out[name], label_of[name] = self._stream_next(name)
-        # per stream with a label_lookup, surface its current label's arrays (strict coverage checked at build).
-        labels = {
-            name: s.label_lookup[self._leaf_of(name, label_of[name])]
-            for name, s in self._streams.items()
-            if s.label_lookup is not None
-        }
-        if labels:
-            out["labels"] = labels
+            out[name], label = self._stream_next(name)
+            leaves[name] = self._leaf_of(name, label)
+        out["leaves"] = leaves  # the group each stream drew this batch — index your own encodings with it
         return out

@@ -56,6 +56,39 @@ def test_max_per_group_deduplicates_to_unique_combos():
     assert {b["leaf"] for b in batches} == {(cl, dr) for cl in CELL_LINES for dr in DRUGS}
 
 
+def test_metadata_only_primary_reads_no_cells_but_still_matches():
+    """reps=() on the primary: every covariate combo enumerated, no target cells, controls still streamed."""
+    adata = _adata()
+    obs = adata.obs.reset_index(drop=True)
+    primary = Stream(
+        "d", group_by=["cell_line", "drug"], reps=(),  # metadata-only: target state unknown
+        weights={(cl, dr): 1.0 for cl in CELL_LINES for dr in ("d1", "d2")},
+    )
+    control = Stream(
+        "d", group_by=["cell_line", "drug"], reps=("X",),
+        weights={(cl, "control"): 1.0 for cl in CELL_LINES}, match_on=["cell_line"],
+    )
+    loader = EvalLoader({"d": adata}, primary=primary, links={"control": control})
+
+    batches = list(loader)
+    assert len(batches) == len(loader) == 4
+    assert {b["leaf"] for b in batches} == {(cl, dr) for cl in CELL_LINES for dr in ("d1", "d2")}
+    for b in batches:
+        assert b["primary"] == {}  # nothing read for the primary
+        cl, _ = b["leaf"]
+        ctrl = np.flatnonzero((obs.cell_line == cl) & (obs.drug == "control"))
+        assert np.array_equal(b["control"]["X"], adata.X[ctrl])  # links unaffected
+
+
+def test_metadata_only_needs_no_rep_on_disk():
+    """A metadata-only stream never touches X — so an obs-only AnnData is enough to enumerate its groups."""
+    obs_only = ad.AnnData(obs=_adata().obs)
+    loader = EvalLoader(
+        {"d": obs_only}, primary=Stream("d", group_by=["cell_line", "drug"], reps=()), max_per_group=1
+    )
+    assert [b["primary"] for b in loader] == [{}] * len(CELL_LINES) * len(DRUGS)
+
+
 def test_random_subsample_is_reproducible_and_capped():
     """subsample="random" caps each group and gives the same draw across passes for a fixed seed."""
     adata = _adata(n_per_combo=8)

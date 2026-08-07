@@ -14,6 +14,11 @@ matched to its linked source by ``match_on``. Every group is covered determinist
 ``subsample`` chooses *which* ``N``: ``"head"`` (first ``N`` in row order), ``"random"`` (a ``seed``-ed,
 per-seed-reproducible draw), or a callable ``(rows, n, rng) -> rows``.
 
+A stream with ``reps=()`` is **metadata-only**: its entry in the batch is an empty mapping and no cell
+matrix is read. On the primary that is a prediction pass with no known target state — every covariate
+combination enumerated as ``batch["leaf"]``, with linked streams still supplying real cells (e.g. matched
+controls) as model input.
+
 It reuses :class:`Loader`'s :class:`~scfit.data.Stream` + :class:`~scfit.data._source.Source` machinery —
 only the sampler becomes an ordered leaf walk, so matching, unified sources and reps behave identically.
 """

@@ -105,15 +105,14 @@ class Stream:
         Columns whose unique combinations define the groups sampled (the leaves).
     reps
         Representation location(s) to stream — a loc string ``"X"`` / ``"obsm/<k>"`` / ``"layers/<k>"``, or a
-        tuple of them for several **aligned** reps of the same cells.
+        tuple of them for several **aligned** reps of the same cells. ``()`` makes the stream
+        **metadata-only**: no cell matrix is ever read and batches carry an empty rep mapping, the stream
+        contributing only its grouping (its ``leaf``). Use it to enumerate covariate combinations with no
+        ground-truth expression — a prediction pass whose target state is unknown. :class:`~scfit.data.EvalLoader`
+        only; the training :class:`~scfit.data.Loader` streams cells and rejects it.
     weights
         ``{group: weight}`` (a group is a ``group_by`` tuple); a group absent or with weight 0 is excluded.
         :obj:`None` (default) is uniform over every group present.
-    label_lookup
-        Optional ``{label: {realm: array}}`` — per-label side arrays (e.g. a perturbation encoding), where a
-        *label* is a ``group_by`` combination. Each batch surfaces this stream's current label's arrays under
-        ``batch["labels"][<stream name>]``. Every positive-weight label must be present (checked at
-        :class:`~scfit.data.Loader` construction).
     match_on
         Columns a *linked* stream shares with the primary — set only on a link, so its group is drawn from
         the same ``match_on`` values as the primary's group each batch. Empty ⇒ unconditional.
@@ -133,7 +132,6 @@ class Stream:
         group_by: Sequence[str],
         reps: str | Sequence[str] = "X",
         weights: Weights | None = None,
-        label_lookup: Mapping[tuple, Mapping[str, np.ndarray]] | None = None,
         match_on: Sequence[str] = (),
         in_memory: bool = False,
         **sampler_kwargs: Unpack[SamplerKwargs],
@@ -147,26 +145,26 @@ class Stream:
         group_by = tuple(group_by)
         if not group_by:
             raise ValueError("Stream.group_by must be non-empty.")
-        reps = (reps,) if isinstance(reps, str) else tuple(reps) if isinstance(reps, tuple | list) else ()
-        if not reps or not all(isinstance(r, str) and r for r in reps):
-            raise ValueError('Stream.reps must be one or more non-empty loc strings ("X" / "obsm/<k>" / …).')
+        if isinstance(reps, str):
+            reps = (reps,)
+        elif isinstance(reps, tuple | list):
+            reps = tuple(reps)  # `()` is legal: a metadata-only stream (see the `reps` docstring)
+        else:
+            raise ValueError(f"Stream.reps must be a loc string or a sequence of loc strings (got {reps!r}).")
+        if not all(isinstance(r, str) and r for r in reps):
+            raise ValueError('Stream.reps entries must be non-empty loc strings ("X" / "obsm/<k>" / …).')
         if weights is not None:
             for k in weights:
                 if len(k) != len(group_by):
                     raise ValueError(f"weight key {k!r} arity != group_by {group_by}.")
             if any(w < 0 for w in weights.values()):
                 raise ValueError("Stream.weights must be non-negative.")
-        if label_lookup is not None:
-            for k in label_lookup:
-                if len(k) != len(group_by):
-                    raise ValueError(f"label_lookup key {k!r} arity != group_by {group_by}.")
 
         self.source_key = source_key
         self.source_keys: tuple[str, ...] = keys  # normalized; one, or several to unify over
         self.group_by = group_by
         self.reps: tuple[str, ...] = reps
         self.weights = weights
-        self.label_lookup = label_lookup
         self.match_on = tuple(match_on)
         self.in_memory = in_memory
         self.sampler_kwargs: dict[str, int] = dict(sampler_kwargs)  # {} (inherit) or all three (see _check_sampler)
