@@ -1,13 +1,7 @@
-r"""The :class:`Source` abstraction: one dataset (a list of ``AnnData``) plus its factorization cache.
+"""The :class:`Source` abstraction: one dataset (a list of ``AnnData``) plus its factorization cache.
 
-A ``source_key`` in the :class:`~scfit.data.Loader`'s ``sources`` mapping resolves to one :class:`Source`.
-Its cells form **one unified categorical universe**: obs is concatenated in list order (== the backings
-order fed to annbatch's ``add_datasets``) and each grouping column is unioned to the categories seen across
-files, so a leaf that lives in only one file resolves to that file when sampled (see :func:`~scfit.data._io.obs_columns`).
-
-That list order is a **load-bearing invariant** — :meth:`factorize` (obs concat) and :meth:`rep` (backings)
-must iterate ``adatas`` in the same order, or a leaf code would point at the wrong file. The factorization
-is cached per ``group_by``, so several streams naming this ``source_key`` factorize it only once.
+A ``source_key`` in the :class:`~scfit.data.Loader`'s ``sources`` mapping resolves to one :class:`Source`,
+whose cells form one unified categorical universe.
 """
 
 from __future__ import annotations
@@ -55,11 +49,21 @@ class Source:
 
     @property
     def adatas(self) -> list[ad.AnnData]:
-        """The dataset's AnnData, in the order everything else (factorization, backings) relies on."""
+        """The dataset's AnnData, in the order everything else (factorization, backings) relies on.
+
+        This order is a **load-bearing invariant**: :meth:`factorize` (obs concat) and :meth:`rep`
+        (backings, == what annbatch's ``add_datasets`` gets) must iterate it identically, or a leaf code
+        would point at the wrong file.
+        """
         return self._adatas
 
     def factorize(self, group_by: tuple[str, ...]) -> _Factorized:
-        """The dataset's obs factorized over ``group_by`` (cached — computed once per ``group_by``)."""
+        """The dataset's obs factorized over ``group_by``.
+
+        Cached per ``group_by``, so several streams naming this ``source_key`` factorize it only once. Each
+        grouping column is unioned to the categories seen across files (see
+        :func:`~scfit.data._io.obs_columns`), so a leaf living in only one file resolves to that file.
+        """
         gb = tuple(group_by)
         if gb not in self._leaf_cache:
             codes, leaves = leaf_codes(obs_columns(self._adatas, gb), gb)

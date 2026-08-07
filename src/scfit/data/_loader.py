@@ -1,18 +1,8 @@
 """``Loader`` — streams matched batches from one primary :class:`Stream` plus named linked streams.
 
-Each pass is a fresh epoch. The primary draws a per-batch class schedule ∝ its weights via an annbatch
+The primary draws a per-batch class schedule ∝ its weights via an annbatch
 :class:`~annbatch.samplers.ClassSampler`; every link replays that schedule onto its own cells via a
-:class:`~annbatch.samplers.BoundClassSampler` — matched by *label* on its ``match_on`` columns (select via
-the link's weights + project via ``match_on``). A batch is ``{stream name: {rep loc: rows}}`` for the
-primary and every link, plus ``"labels"`` (the current label's arrays for every stream with a
-``label_lookup``). Every sampler that must agree within a pass (the schedule oracle, the primary's reps,
-each link's inner) is a ``deepcopy`` of one seeded oracle, so they stay in lockstep, a stream's reps read
-the same rows, and a pickled loader resumes the same stream.
-
-Streams address their data by ``source_key`` into the ``sources`` mapping; each key resolves to one
-``Source`` (an internal wrapper) that owns that dataset's obs factorization, shared by every stream naming
-the key. :meth:`Loader.from_paths` opens zarr path(s) backed — reading only the reps + cols the streams use —
-and builds that mapping.
+:class:`~annbatch.samplers.BoundClassSampler`, matched on its ``match_on`` columns.
 """
 
 from __future__ import annotations
@@ -44,7 +34,17 @@ __all__ = ["Loader"]
 
 
 class Loader:
-    """Yields ``{stream name: {rep loc: rows}}`` (+ ``"labels"``) — the primary plus its matched links."""
+    """An infinite stream of matched batches — the primary plus its links, keyed by stream name.
+
+    A batch is ``{stream name: {rep loc: rows}}`` for the primary and every link, plus ``"leaves"``
+    (``{stream name: <group_by tuple>}`` — the group each stream drew). Side arrays keyed by group (a
+    perturbation encoding, a dose vector) are the *consumer's*: index them with that leaf.
+
+    A fresh epoch rolls each pass; :meth:`set_n_iters` only inserts a pause point, it never restarts.
+    Streams address their data by ``source_key`` into ``sources``; each key resolves to one
+    :class:`~scfit.data._source.Source` owning that dataset's obs factorization, shared by every stream
+    naming it. :meth:`from_paths` builds that mapping from zarr paths.
+    """
 
     def __init__(
         self,
@@ -55,12 +55,9 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
-        n_iters: int | None = None,
         **sampler_kwargs: Unpack[SamplerKwargs],
     ) -> None:
         _check_sampler(sampler_kwargs, "Loader")
-        if n_iters is not None and n_iters < 1:
-            raise ValueError(f"n_iters must be a positive integer or None (got {n_iters!r}).")
         links = dict(links or {})
         validate_links(primary, links)
         self._streams: dict[str, Stream] = {_PRIMARY: primary, **links}
@@ -77,6 +74,14 @@ class Loader:
         # Resolve sampler kwargs per stream: the stream's own win; else the loader's; else error.
         self._cfg: dict[str, dict[str, int]] = {}
         for name, s in self._streams.items():
+            if not s.reps:
+                # ponytail: no metadata-only training stream — the per-rep annbatch loaders ARE what advances
+                # the sampler, so a repless stream would yield {} forever (and no label). Wire the sampler up
+                # standalone if a label-only training stream ever has a use.
+                raise ValueError(
+                    f"stream {name!r} has no reps: metadata-only streams are EvalLoader-only (the training "
+                    "Loader streams cells). Give it a rep, or iterate it with EvalLoader."
+                )
             eff = dict(s.sampler_kwargs or sampler_kwargs)
             if not eff:
                 raise ValueError(
@@ -108,16 +113,17 @@ class Loader:
             f = src.factorize(s.group_by)
             self._resolved[name] = src
             self._st[name] = {"leaves": f.leaves, "w": weight_vector(s.weights, f.leaves), "cats": f.cats}
-        self._validate_label_lookups()
 
-        # Default pass length: primary rows // its batch_size. ``n_iters`` overrides it — a finite loader
-        # yields exactly n_iters batches then stops; None ⇒ infinite, rolling a fresh epoch each pass.
+        # Epoch length: primary rows // its batch_size. The underlying stream is *always* infinite — it rolls
+        # a fresh epoch of this length each pass — and ``n_iters`` never touches the samplers, so the schedule
+        # is independent of any cap.
         n_root_obs = len(self._st[_PRIMARY]["cats"])
-        self.n_batches = max(1, n_root_obs // self._root_batch_size)
-        self.n_iters = n_iters
-        self._pass_len = n_iters if n_iters is not None else self.n_batches
+        self.n_batches = self._pass_len = max(1, n_root_obs // self._root_batch_size)
+        self.n_iters: int | None = None
 
-        # The primary's sampler is the oracle; the primary's reps and each link's inner all deepcopy it.
+        # The primary's sampler is the oracle; the primary's reps and each link's inner all deepcopy it. Every
+        # sampler that must agree within a pass IS a deepcopy of one seeded oracle — that is what keeps them in
+        # lockstep, makes a stream's reps read the same rows, and lets a pickled loader resume the same stream.
         self._oracle_sampler = self._new_class_sampler(_PRIMARY)
         self._loaders: dict[str, dict[str, AnnbatchLoader]] = {
             _PRIMARY: self._build_per_rep_loaders(_PRIMARY, deepcopy(self._oracle_sampler))
@@ -129,7 +135,20 @@ class Loader:
             self._loaders[name] = self._build_per_rep_loaders(name, sampler)
 
         self._iters: dict[str, dict[str, Iterator[dict]]] | None = None
-        self._pos = 0
+        self._pos = 0  # position within the current epoch (drives the epoch roll)
+        self._since_pause = 0  # batches yielded since the last StopIteration, vs ``n_iters``
+
+    def set_n_iters(self, n_iters: int | None) -> Loader:
+        """Yield ``n_iters`` batches per pass (``None`` ⇒ never stop). Returns ``self``.
+
+        This is a *pause point*, not a restart: the underlying stream is one infinite schedule, so after a
+        pass ends the next ``for`` loop resumes where it left off rather than replaying the same batches.
+        """
+        if n_iters is not None and n_iters < 1:
+            raise ValueError(f"n_iters must be a positive integer or None (got {n_iters!r}).")
+        self.n_iters = n_iters
+        self._since_pause = 0
+        return self
 
     # ── construction ─────────────────────────────────────────────────────────
     @classmethod
@@ -142,7 +161,6 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
-        n_iters: int | None = None,
         **sampler_kwargs: Unpack[SamplerKwargs],
     ) -> Loader:
         """Build a :class:`Loader` from zarr ``{source_key: path | [paths]}``, opened backed.
@@ -169,7 +187,6 @@ class Loader:
             seed=seed,
             to=to,
             preload_to_gpu=preload_to_gpu,
-            n_iters=n_iters,
             **sampler_kwargs,
         )
 
@@ -227,16 +244,6 @@ class Loader:
             )
         return loaders
 
-    def _validate_label_lookups(self) -> None:
-        """Strict coverage: a stream's ``label_lookup`` must cover its positive-weight leaves (no silent gaps)."""
-        for name, s in self._streams.items():
-            if s.label_lookup is None:
-                continue
-            leaves, weights = self._st[name]["leaves"], self._st[name]["w"]
-            missing = [lf for lf, w in zip(leaves, weights, strict=True) if w > 0 and lf not in s.label_lookup]
-            if missing:
-                raise ValueError(f"stream {name!r}: label_lookup misses positive-weight leaves {missing}.")
-
     # ── pickling ─────────────────────────────────────────────────────────────
     def __getstate__(self) -> dict[str, object]:
         """Pickle without the live annbatch iterators (generators aren't picklable).
@@ -255,11 +262,8 @@ class Loader:
     def __iter__(self) -> Loader:
         return self
 
-    def __len__(self) -> int:
-        """The finite batch count ``n_iters``; an infinite loader (``n_iters is None``) has no length."""
-        if self.n_iters is None:
-            raise TypeError("infinite Loader has no len() — set n_iters for a finite loader.")
-        return self.n_iters
+    # ponytail: no __len__ — the loader is an infinite stream that ``n_iters`` merely pauses, and a len()
+    # that raises half the time is worse than none. Read ``n_iters`` / ``n_batches`` directly if you need a count.
 
     def _stream_next(self, name: str) -> tuple[dict, object]:
         """A stream's aligned reps ``{rep loc: rows}`` plus its per-batch ``label`` (category label).
@@ -278,28 +282,25 @@ class Loader:
         return leaf if name == _PRIMARY else leaf[len(self._streams[name].match_on) :]
 
     def __next__(self) -> dict[str, dict]:
-        if self.n_iters is not None and self._pos >= self.n_iters:
-            raise StopIteration  # finite loader: exactly n_iters batches, then done
-        if self._iters is None or (self.n_iters is None and self._pos >= self._pass_len):
+        if self.n_iters is not None and self._since_pause >= self.n_iters:
+            self._since_pause = 0  # pause here; the next pass resumes the same stream, it does not replay
+            raise StopIteration
+        if self._iters is None or self._pos >= self._pass_len:
             # (Re)build one iterator per stream/rep from the advancing sampler RNG — a fresh reproducible
-            # epoch (first pass, next epoch, or resume after unpickling). A finite loader builds it once.
+            # epoch (first pass, next epoch, or resume after unpickling). Independent of ``n_iters``: a pause
+            # mid-epoch leaves ``_pos`` alone, so the next pass picks the epoch up where it stopped.
             self._iters = {
                 name: {loc: iter(ld) for loc, ld in loaders.items()} for name, loaders in self._loaders.items()
             }
             self._pos = 0
         self._pos += 1
+        self._since_pause += 1
 
         # One entry per streamed stream, keyed by name: the primary is the target, each link a source.
         out: dict = {}
-        label_of: dict = {}
+        leaves: dict = {}
         for name in (_PRIMARY, *self._links):
-            out[name], label_of[name] = self._stream_next(name)
-        # per stream with a label_lookup, surface its current label's arrays (strict coverage checked at build).
-        labels = {
-            name: s.label_lookup[self._leaf_of(name, label_of[name])]
-            for name, s in self._streams.items()
-            if s.label_lookup is not None
-        }
-        if labels:
-            out["labels"] = labels
+            out[name], label = self._stream_next(name)
+            leaves[name] = self._leaf_of(name, label)
+        out["leaves"] = leaves  # the group each stream drew this batch — index your own encodings with it
         return out

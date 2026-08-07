@@ -1,9 +1,8 @@
 """Container-agnostic data access for the loader: obs columns, leaf codes, and rep backings.
 
-Every helper works uniformly over an in-memory ``AnnData`` and an out-of-core annbatch
-``DatasetCollection``, and over ``X`` / ``obsm`` / ``layers`` representations — so the loader never
-branches on the source kind. No cell matrices are touched for grouping (obs only); cells are read
-only when a batch is materialized (by annbatch's own loader over the returned backings).
+Every helper works uniformly over an in-memory ``AnnData``, an out-of-core annbatch
+``DatasetCollection``, and ``X`` / ``obsm`` / ``layers`` reps, so the loader never branches on the source
+kind. No cell matrices are touched for grouping — obs only.
 """
 
 from __future__ import annotations

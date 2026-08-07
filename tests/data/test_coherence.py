@@ -1,7 +1,7 @@
 """Coherence of the matched Stream/Loader: each yielded row decodes to the label it must belong to.
 
 Each cell's ``(cell_line, drug, control)`` is encoded into ``X`` so every row can be decoded: the primary
-batch is one perturbed condition, ``batch["labels"]["primary"]`` matches it, and the ``ctrl`` batch is
+batch is one perturbed condition, ``batch["leaves"]["primary"]`` matches it, and the ``ctrl`` batch is
 control cells of the *matched* context (``match_on`` → same cell line). Also: aligned reps read the same
 cells, multiple links stay keyed by name, ``match_on=()`` decouples, and per-stream batch sizes differ.
 """
@@ -21,7 +21,6 @@ from scheme_helpers import (
     codes,
     encoded_adata,
     only_leaf,
-    perturbation_labels,
     perturbation_loader,
     perturbation_streams,
     rep,
@@ -35,17 +34,21 @@ COLS = ("cell_line", "drug")
 
 
 def test_primary_label_and_context_coherent():
-    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), label_lookup=perturbation_labels())
+    """Every stream's reported ``leaves`` entry is exactly the group its rows decode to."""
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16))
+    line_code, drug_code = codes(LINES), codes(DRUGS)
     it = iter(loader)
     for _ in range(12):
         b = next(it)
         tgt, src = rep(b, "primary"), rep(b, "ctrl")
         line, drug = only_leaf(tgt)  # primary batch is one perturbed condition
         assert tgt[0, IS_CONTROL] == 0.0, "primary must be perturbed (not control)"
-        cond = np.asarray(b["labels"]["primary"]["condition"])
-        assert cond[0, 0] == line and cond[0, 1] == drug, "label ≠ primary condition"
+        p_leaf = b["leaves"]["primary"]  # the group the primary drew — index your own encodings with it
+        assert (line_code[p_leaf[0]], drug_code[p_leaf[1]]) == (line, drug), "leaf ≠ primary condition"
         assert (src[:, IS_CONTROL] == 1.0).all(), "ctrl must be control cells"
         assert only_leaf(src)[0] == line, "ctrl context (cell line) ≠ primary context"
+        c_leaf = b["leaves"]["ctrl"]  # a link reports its OWN leaf (past match_on), not the primary's
+        assert (line_code[c_leaf[0]], drug_code[c_leaf[1]]) == only_leaf(src), "leaf ≠ ctrl condition"
 
 
 def test_reps_from_distinct_stores_are_the_same_cells():
@@ -102,7 +105,9 @@ def test_multiple_links_are_keyed_by_name():
         seed=0,
     )
     b = next(iter(loader))
-    assert set(b) == {"primary", "on_line", "on_drug"}  # every stream present, keyed by name (no clobber)
+    streams = {"primary", "on_line", "on_drug"}
+    assert set(b) == streams | {"leaves"}  # every stream present, keyed by name (no clobber)
+    assert set(b["leaves"]) == streams  # and each reports the group it drew
     tgt = rep(b, "primary")
     assert (rep(b, "on_line")[:, 0] == tgt[0, 0]).all()  # on_line matched on the line column
     assert (rep(b, "on_drug")[:, 1] == tgt[0, 1]).all()  # on_drug matched on the drug column
@@ -164,9 +169,7 @@ def test_materialize_node_selects_positive_weight_rows():
 
 
 def test_in_memory_control_materialized():
-    loader = perturbation_loader(
-        encoded_adata(LINES, DRUGS, 16), ctrl_in_memory=True, label_lookup=perturbation_labels()
-    )
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), ctrl_in_memory=True)
     materialized = loader._resolved["ctrl"]  # control materialized into a RAM-backed Source
     assert isinstance(materialized, Source)
     assert isinstance(materialized.adatas[0].X, np.ndarray)  # dense, in-memory (not a backing)
