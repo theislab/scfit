@@ -13,3 +13,8 @@ and this project adheres to [Semantic Versioning][].
 ### Added
 
 - Basic tool, preprocessing and plotting functions
+- `registry.RngComponent`, a family marker for configs whose `build` takes a caller-supplied `rng`
+
+### Fixed
+
+- `registry`: components inside `dict`, `list` and `tuple` fields keep their type through `to_spec` / `parse` ([#14](https://github.com/theislab/scfit/issues/14))

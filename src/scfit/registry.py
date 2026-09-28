@@ -8,15 +8,19 @@ foundation toolboxes and any other ecosystem plugin subclass it, so specs stay p
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping
-from typing import Any, ClassVar, get_args, get_type_hints
+import types
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Union, get_args, get_origin, get_type_hints
 
 # Deliberately cattrs, not pydantic/msgspec: this is a public foundation downstream packages subclass, so
 # the dependency surface stays minimal and the on-disk format stable. It also coerces OmegaConf
 # ListConfig/DictConfig leaf values natively. See the design decision for the full rationale.
 import cattrs
 
-__all__ = ["Component", "PortabilityError", "to_spec", "parse", "build", "register_live"]
+if TYPE_CHECKING:
+    import numpy as np
+
+__all__ = ["Component", "RngComponent", "PortabilityError", "to_spec", "parse", "build", "register_live"]
 
 _REGISTRY: dict[str, type[Component]] = {}
 _converter = cattrs.Converter(forbid_extra_keys=True)  # loud on a typo'd LEAF field
@@ -88,6 +92,18 @@ class Component:
         return _structure_component(spec, cls).build(context)
 
 
+class RngComponent(Component):
+    """Family marker for a config whose ``build`` draws randomness from a caller-supplied ``rng``.
+
+    Such a config holds no seed. The caller derives ``rng`` from the run's seed, so every stream traces back
+    to one place. A component needing several independent streams splits its ``rng`` with ``rng.spawn(n)``.
+    """
+
+    def build(self, context: Any = None, *, rng: np.random.Generator) -> Any:
+        """Construct the runtime object, drawing all randomness from ``rng``."""
+        raise NotImplementedError(f"{type(self).__name__} must implement build(self, context, *, rng).")
+
+
 def register_live(cls: type) -> type:
     """Mark a live runtime type as non-portable: exporting a config that holds one raises loudly.
 
@@ -115,9 +131,17 @@ def _is_component(tp: Any) -> bool:
     return isinstance(tp, type) and issubclass(tp, Component)
 
 
+def _has_component(tp: Any) -> bool:
+    return _is_component(tp) or any(_has_component(a) for a in get_args(tp))
+
+
 def _unstructure_field(value: Any) -> Any:
     if isinstance(value, Component):
         return to_spec(value)  # nested sub-component -> nested envelope
+    if isinstance(value, Mapping):
+        return {_converter.unstructure(k): _unstructure_field(v) for k, v in value.items()}
+    if type(value) in (list, tuple):
+        return type(value)(_unstructure_field(v) for v in value)
     return _converter.unstructure(value)  # leaves + live-instance guard (raises)
 
 
@@ -128,8 +152,8 @@ def to_spec(config: Component) -> dict[str, Any]:
 
 
 def _structure_field(value: Any, ftype: Any) -> Any:
-    args = get_args(ftype)
-    if args:  # a Union (incl. Optional and the spec|live escape hatch)
+    origin, args = get_origin(ftype), get_args(ftype)
+    if origin is Union or origin is types.UnionType:  # incl. Optional and the spec|live escape hatch
         if value is None and type(None) in args:
             return None
         comp = next((a for a in args if _is_component(a)), None)
@@ -141,6 +165,15 @@ def _structure_field(value: Any, ftype: Any) -> Any:
         return _converter.structure(value, ftype)
     if _is_component(ftype):
         return _structure_component(value, ftype)
+    if args and _has_component(ftype):  # a container of components: recurse so each keeps its type
+        if isinstance(origin, type) and issubclass(origin, Mapping):
+            key_type, value_type = args
+            return {_converter.structure(k, key_type): _structure_field(v, value_type) for k, v in value.items()}
+        if origin is tuple and not (len(args) == 2 and args[1] is Ellipsis):
+            return tuple(_structure_field(v, t) for v, t in zip(value, args, strict=True))
+        if isinstance(origin, type) and issubclass(origin, Sequence):
+            items = [_structure_field(v, args[0]) for v in value]
+            return tuple(items) if origin is tuple else items
     return _converter.structure(value, ftype)  # cattrs does the leaf recursion + OmegaConf coercion
 
 

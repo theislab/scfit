@@ -10,7 +10,7 @@ import dataclasses
 
 import pytest
 
-from scfit.registry import Component, PortabilityError, parse, register_live, to_spec
+from scfit.registry import Component, PortabilityError, RngComponent, parse, register_live, to_spec
 
 
 @dataclasses.dataclass
@@ -53,3 +53,54 @@ def test_live_instance_has_no_portable_spec():
 
     with pytest.raises(PortabilityError):
         to_spec(_Holder(obj=_Live()))
+
+
+class _Enc(Component):
+    pass
+
+
+@dataclasses.dataclass
+class _OneHot(_Enc, type_id="test.one_hot", version=1):
+    categories: list[str] | None = None
+
+
+@dataclasses.dataclass
+class _Label(_Enc, type_id="test.label", version=1):
+    categories: list[str] | None = None
+
+
+@dataclasses.dataclass
+class _Encoders(Component, type_id="test.encoders", version=1):
+    by_key: dict[str, _Enc] | None = None
+    ordered: list[_Enc] = dataclasses.field(default_factory=list)
+    pair: tuple[_Enc, _Enc] | None = None
+    many: tuple[_Enc, ...] = ()
+
+
+def test_components_in_containers_keep_their_type():
+    config = _Encoders(
+        by_key={"a": _OneHot(), "b": _Label(["x"])},
+        ordered=[_Label(), _OneHot()],
+        pair=(_OneHot(), _Label()),
+        many=(_Label(),),
+    )
+    spec = config.to_spec()
+    assert spec["config"]["by_key"]["a"]["type"] == "test.one_hot"
+    assert parse(spec) == config
+
+
+def test_rng_component_builds_from_the_given_rng():
+    np = pytest.importorskip("numpy")
+
+    @dataclasses.dataclass
+    class _Draw(RngComponent, type_id="test.draw", version=1):
+        n: int = 3
+
+        def build(self, context=None, *, rng):
+            return rng.random(self.n)
+
+    config = parse(_Draw().to_spec())
+    assert isinstance(config, RngComponent)
+    np.testing.assert_array_equal(config.build(rng=np.random.default_rng(0)), np.random.default_rng(0).random(3))
+    with pytest.raises(TypeError):
+        config.build()
