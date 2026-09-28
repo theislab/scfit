@@ -8,6 +8,7 @@ foundation toolboxes and any other ecosystem plugin subclass it, so specs stay p
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import types
 from collections.abc import Callable, Mapping, Sequence
 from typing import (
@@ -73,6 +74,8 @@ class Component:
 class RngComponent(Component):
     """Family marker for a config whose ``build`` takes a keyword-only ``rng: numpy.random.Generator``.
 
+    :func:`component` checks the signature, so a registered one without it fails at import.
+
     Such a config holds no seed. The caller derives ``rng`` from the run's seed, so every stream traces back
     to one place. A component needing several independent streams splits its ``rng`` with ``rng.spawn(n)``.
     """
@@ -103,6 +106,11 @@ def component(
         _field_types(cls)
         if type_id is None:
             return cls
+        if issubclass(cls, RngComponent):
+            build = getattr(cls, "build", None)
+            rng = inspect.signature(build).parameters.get("rng") if callable(build) else None
+            if rng is None or rng.kind is not inspect.Parameter.KEYWORD_ONLY:
+                raise TypeError(f"{cls.__name__} is an RngComponent, so its build must take a keyword-only `rng`.")
         existing = _REGISTRY.get(type_id)
         if existing is not None and existing is not cls:
             raise ValueError(f"type_id {type_id!r} already registered to {existing.__name__}.")

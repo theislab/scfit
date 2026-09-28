@@ -129,3 +129,12 @@ def test_older_accepted_version_still_loads():
     assert _Grown().to_spec()["version"] == 2
     with pytest.raises(ValueError, match="Unsupported"):
         parse({**old, "version": 3})
+
+
+def test_rng_component_without_rng_fails_at_import():
+    with pytest.raises(TypeError, match="keyword-only `rng`"):
+
+        @component("test.no_rng")
+        class _NoRng(RngComponent):
+            def build(self):
+                return None
