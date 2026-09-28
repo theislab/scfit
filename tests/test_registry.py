@@ -116,3 +116,16 @@ def test_unregistered_subclass_has_no_spec():
 def test_components_are_frozen():
     with pytest.raises(dataclasses.FrozenInstanceError):
         _Widget().width = 4  # type: ignore[misc]
+
+
+def test_older_accepted_version_still_loads():
+    @component("test.grown", version=2, versions=(1, 2))
+    class _Grown(Component):
+        width: int = 3
+        height: int = 1
+
+    old = {"type": "test.grown", "version": 1, "config": {"width": 5}}
+    assert parse(old) == _Grown(width=5)
+    assert _Grown().to_spec()["version"] == 2
+    with pytest.raises(ValueError, match="Unsupported"):
+        parse({**old, "version": 3})

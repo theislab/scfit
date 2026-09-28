@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning][].
 ### Removed
 
 - `registry.build`, `Component.build` and `Component.build_spec`: each family declares its own typed `build`
-- The `type_id=` / `version=` / `versions=` class keywords: use `@component(type_id, version=...)`
+- The `type_id=` / `version=` / `versions=` class keywords: use `@component(type_id, version=..., versions=...)`
 
 ### Fixed
 

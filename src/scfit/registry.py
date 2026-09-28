@@ -53,7 +53,8 @@ class Component:
 
     __dataclass_fields__: ClassVar[dict[str, dataclasses.Field[Any]]]  # set by `component`
     __type_id__: ClassVar[str]
-    __version__: ClassVar[int]
+    __version__: ClassVar[int]  # written
+    __versions__: ClassVar[frozenset[int]]  # accepted when read
 
     def to_spec(self) -> dict[str, Any]:
         """Return this config as a portable ``{type, version, config}`` dict; raises on live instances."""
@@ -78,16 +79,22 @@ class RngComponent(Component):
 
 
 @dataclass_transform(frozen_default=True, kw_only_default=True)
-def component(type_id: str | None = None, *, version: int = 1) -> Callable[[type[_C]], type[_C]]:
+def component(
+    type_id: str | None = None, *, version: int = 1, versions: tuple[int, ...] | None = None
+) -> Callable[[type[_C]], type[_C]]:
     """Make a `Component` subclass a frozen, keyword-only dataclass and register it under ``type_id``.
 
     Without ``type_id`` the class is a family base with fields, left unregistered. Field annotations are
     resolved here, so an unresolvable one fails at import instead of at the first :func:`parse`.
+
+    Specs are written at ``version``. ``versions`` lists every version one may be read at, e.g. ``(1, 2)``
+    after adding a field with a default, so v1 specs still load.
     """
     if type_id is not None and (not isinstance(type_id, str) or not type_id):
         raise TypeError("type_id must be a non-empty string.")
-    if not isinstance(version, int) or isinstance(version, bool) or version <= 0:
-        raise ValueError(f"{type_id!r}: version must be a positive integer, got {version!r}.")
+    accepted = frozenset(versions) if versions is not None else frozenset({version})
+    if version not in accepted or any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in accepted):
+        raise ValueError(f"{type_id!r}: bad version/versions ({version!r}, {sorted(accepted)}).")
 
     def register(cls: type[_C]) -> type[_C]:
         if not (isinstance(cls, type) and issubclass(cls, Component)):
@@ -99,7 +106,7 @@ def component(type_id: str | None = None, *, version: int = 1) -> Callable[[type
         existing = _REGISTRY.get(type_id)
         if existing is not None and existing is not cls:
             raise ValueError(f"type_id {type_id!r} already registered to {existing.__name__}.")
-        cls.__type_id__, cls.__version__ = type_id, version
+        cls.__type_id__, cls.__version__, cls.__versions__ = type_id, version, accepted
         _REGISTRY[type_id] = cls
         return cls
 
@@ -210,8 +217,8 @@ def _structure_component[C: Component](spec: object, expected: type[C]) -> C:
         raise ValueError(f"Unknown type {type_id!r}; registered: {sorted(_REGISTRY)}.") from None
     if not issubclass(target, expected):
         raise ValueError(f"type {type_id!r} ({target.__name__}) is not a {expected.__name__}.")
-    if version != target.__version__:
-        raise ValueError(f"Unsupported {type_id!r} config version {version}; expected {target.__version__}.")
+    if version not in target.__versions__:
+        raise ValueError(f"Unsupported {type_id!r} config version {version}; accepted: {sorted(target.__versions__)}.")
     field_types = _field_types(target)
     known = {f.name for f in dataclasses.fields(target)}
     unknown = set(cfg) - known
