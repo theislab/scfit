@@ -21,6 +21,7 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
+    is_typeddict,
 )
 
 # Deliberately cattrs, not pydantic/msgspec: this is a public foundation downstream packages subclass, so
@@ -175,6 +176,12 @@ def _structure_field(value: object, ftype: Any) -> object:
         return _converter.structure(value, ftype)
     if _is_component(ftype):
         return _structure_component(value, ftype)
+    if is_typeddict(ftype) and isinstance(value, Mapping):  # a params bag: each key keeps its own type
+        hints = get_type_hints(ftype)
+        unknown, missing = set(value) - set(hints), ftype.__required_keys__ - set(value)
+        if unknown or missing:
+            raise ValueError(f"{ftype.__name__}: unknown key(s) {sorted(unknown)}, missing {sorted(missing)}.")
+        return {k: _structure_field(v, hints[k]) for k, v in value.items()}
     if args and _has_component(ftype):  # a container of components: recurse so each keeps its type
         if isinstance(origin, type) and issubclass(origin, Mapping) and isinstance(value, Mapping):
             key_type, value_type = args

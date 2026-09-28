@@ -7,9 +7,11 @@ suite honest about the public :mod:`scfit.registry` surface.
 from __future__ import annotations
 
 import dataclasses
+from typing import Annotated, TypedDict
 
 import pytest
 
+from scfit.params import Default, ParamsComponent
 from scfit.registry import Component, PortabilityError, component, parse, register_live, to_spec
 
 
@@ -113,3 +115,28 @@ def test_older_accepted_version_still_loads():
     assert _Grown().to_spec()["version"] == 2
     with pytest.raises(ValueError, match="Unsupported"):
         parse({**old, "version": 3})
+
+
+class _WidgetParams(TypedDict, total=False):
+    enc: Annotated[_Enc, Default(_OneHot())]
+    width: Annotated[int, Default(3)]
+
+
+@component("test.with_params")
+class _WithParams(ParamsComponent):
+    params: _WidgetParams = dataclasses.field(default_factory=lambda: _WidgetParams())
+
+
+def test_params_pin_defaults_and_keep_nested_types():
+    config = _WithParams(params={"enc": _Label(categories=["x"])})
+    spec = config.to_spec()
+    assert spec["config"]["params"]["width"] == 3  # the default is written into the spec
+    assert spec["config"]["params"]["enc"]["type"] == "test.label"
+    assert _WithParams.from_spec(spec) == config
+
+
+def test_params_reject_unknown_keys():
+    with pytest.raises(ValueError, match="Unknown"):
+        _WithParams(params={"widht": 4})  # pyright: ignore[reportArgumentType]  (the typo is the point)
+    with pytest.raises(ValueError, match="unknown"):
+        _WithParams.from_spec({"type": "test.with_params", "version": 1, "config": {"params": {"widht": 4}}})
