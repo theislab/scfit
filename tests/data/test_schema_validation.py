@@ -10,8 +10,7 @@ from __future__ import annotations
 import pytest
 from scheme_helpers import KEY, encoded_adata, uniform
 
-from scfit.data import Loader, SamplerParams, Stream
-from scfit.params import resolve_params
+from scfit.data import Loader, Stream
 
 ADATA = encoded_adata(("A", "B"), ("d1", "d2"), 8)  # 4 groups × 8 cells (perturbed only — no control needed)
 SRC = {KEY: ADATA}  # the sources mapping every Loader case below streams from
@@ -51,19 +50,6 @@ def test_source_key_must_be_non_empty_string():
 def test_stream_rejects(kw: dict, exc: type[Exception], msg: str):
     with pytest.raises(exc, match=msg):
         Stream("k", **kw)
-
-
-@pytest.mark.parametrize(
-    ("kw", "msg"),
-    [
-        pytest.param({"batch_size": 8, "chunk_size": 3, "preload_nchunks": 8}, "divide", id="chunk_not_dividing"),
-        pytest.param({"batch_size": 0, "preload_nchunks": 1}, "divide", id="zero_batch"),
-        pytest.param({"batch_size": 8, "chunk_size": 2, "preload_nchunks": 3}, "multiple", id="bad_window"),
-    ],
-)
-def test_sampler_params_rejected(kw: dict, msg: str):
-    with pytest.raises(ValueError, match=msg):
-        resolve_params(kw, SamplerParams)
 
 
 # ── Loader: read config resolution ─────────────────────────────────────────────────────────────────────

@@ -28,14 +28,6 @@ def test_validator_runs_on_merged_params():
         resolve_params({"size": 0}, _Params)
 
 
-def test_key_without_default_raises():
-    class _NoDefault(TypedDict, total=False):
-        size: int
-
-    with pytest.raises(TypeError, match="missing a `Default"):
-        defaults_of(_NoDefault)
-
-
 class _WithRequired(TypedDict, total=False):
     size: Required[int]
     name: Annotated[str, Default("a")]

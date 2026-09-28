@@ -11,7 +11,7 @@ from typing import Annotated, Required, TypedDict
 import anndata as ad
 import numpy as np
 
-from scfit.params import Default, validates
+from scfit.params import Default
 
 type Container = ad.AnnData | list[ad.AnnData]
 
@@ -31,21 +31,10 @@ class SamplerParams(TypedDict, total=False):
     batch_size: Required[int]
     """Rows per emitted batch for the stream. Source and target row counts need not match."""
     preload_nchunks: Required[int]
-    """Chunks per annbatch read window, a positive multiple of ``batch_size // chunk_size``."""
+    """Chunks per annbatch read window. annbatch validates the three sizes together."""
     chunk_size: Annotated[int, Default(1)]
     """annbatch read-slice size. ``1`` reads per row (any layout); ``>1`` reads contiguous chunks, so each
-    sampled leaf must sit in a contiguous run of at least ``chunk_size``. Must divide ``batch_size``."""
-
-
-@validates(SamplerParams)
-def _check_sampler(p: dict[str, int]) -> None:
-    batch, chunk, window = p["batch_size"], p["chunk_size"], p["preload_nchunks"]
-    if batch <= 0 or chunk <= 0 or batch % chunk:
-        raise ValueError(f"chunk_size={chunk} must be positive and divide batch_size={batch}.")
-    if window <= 0 or window % (batch // chunk):
-        raise ValueError(
-            f"preload_nchunks={window} must be a positive multiple of batch_size // chunk_size = {batch // chunk}."
-        )
+    sampled leaf must sit in a contiguous run of at least ``chunk_size``."""
 
 
 def weight_vector(weights: Weights | None, leaves: Sequence[tuple]) -> np.ndarray:
