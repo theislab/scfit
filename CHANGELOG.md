@@ -13,7 +13,6 @@ and this project adheres to [Semantic Versioning][].
 ### Added
 
 - Basic tool, preprocessing and plotting functions
-- `registry.RngComponent`, a family marker for configs whose `build` takes a caller-supplied `rng`
 - `registry.component`: the one way to register a config; makes it a frozen, keyword-only dataclass
 
 ### Removed

@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import dataclasses
 
-import numpy as np
 import pytest
 
-from scfit.registry import Component, PortabilityError, RngComponent, component, parse, register_live, to_spec
+from scfit.registry import Component, PortabilityError, component, parse, register_live, to_spec
 
 
 @component("test.widget")
@@ -90,21 +89,6 @@ def test_components_in_containers_keep_their_type():
     assert parse(spec) == config
 
 
-def test_rng_component_builds_from_the_given_rng():
-    @component("test.draw")
-    class _Draw(RngComponent):
-        n: int = 3
-
-        def build(self, *, rng):
-            return rng.random(self.n)
-
-    config = _Draw.from_spec(_Draw().to_spec())
-    assert isinstance(config, RngComponent)
-    np.testing.assert_array_equal(config.build(rng=np.random.default_rng(0)), np.random.default_rng(0).random(3))
-    with pytest.raises(TypeError):
-        config.build()  # pyright: ignore[reportCallIssue]  (the missing rng is the point)
-
-
 def test_unregistered_subclass_has_no_spec():
     class _Unregistered(_Widget):
         pass
@@ -129,12 +113,3 @@ def test_older_accepted_version_still_loads():
     assert _Grown().to_spec()["version"] == 2
     with pytest.raises(ValueError, match="Unsupported"):
         parse({**old, "version": 3})
-
-
-def test_rng_component_without_rng_fails_at_import():
-    with pytest.raises(TypeError, match="keyword-only `rng`"):
-
-        @component("test.no_rng")
-        class _NoRng(RngComponent):
-            def build(self):
-                return None
