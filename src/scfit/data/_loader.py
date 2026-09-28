@@ -42,6 +42,10 @@ class Loader:
     Streams address their data by ``source_key`` into ``sources``; each key resolves to one
     :class:`~scfit.data._source.Source` owning that dataset's obs factorization, shared by every stream
     naming it. :meth:`from_paths` builds that mapping from zarr paths.
+
+    Every stream reads with ``sampler``. ``stream_samplers`` gives a named stream its own
+    :class:`~scfit.data.SamplerParams` instead; that entry replaces ``sampler`` for the stream rather than
+    merging with it, so it repeats ``batch_size`` and ``preload_nchunks``.
     """
 
     def __init__(
@@ -90,7 +94,7 @@ class Loader:
             if s.in_memory and eff["chunk_size"] != 1:
                 raise ValueError(
                     f"stream {name!r} is in_memory but chunk_size={eff['chunk_size']}: an in-memory stream is read "
-                    "from RAM in one shot and must use chunk_size=1 (set it explicitly)."
+                    "from RAM in one shot and must use chunk_size=1."
                 )
             self._cfg[name] = eff
         self._root_batch_size = self._cfg[_PRIMARY]["batch_size"]

@@ -4,7 +4,7 @@ from typing import Annotated, Required, TypedDict, Unpack
 
 import pytest
 
-from scfit.params import Default, defaults_of, resolve_init_params, resolve_params, validates
+from scfit.params import Default, resolve_init_params, resolve_params, validates
 
 
 class _Params(TypedDict, total=False):
@@ -20,7 +20,7 @@ def _check(p: dict) -> None:
 
 def test_resolve_merges_over_defaults():
     assert resolve_params({"size": 8}, _Params) == {"size": 8, "name": "a"}
-    assert resolve_params(None, _Params) == defaults_of(_Params)
+    assert resolve_params(None, _Params) == {"size": 4, "name": "a"}
 
 
 def test_validator_runs_on_merged_params():
@@ -56,3 +56,12 @@ class _Derived(_Base):
 def test_init_params_resolve_against_the_most_derived_spec():
     assert _Base().params == {"size": 4, "name": "a"}
     assert _Derived(size=2).params == {"size": 2, "name": "a", "extra": True}
+
+
+class _WithList(TypedDict, total=False):
+    xs: Annotated[list[int], Default([])]
+
+
+def test_mutable_defaults_are_not_shared():
+    resolve_params(None, _WithList)["xs"].append(1)
+    assert resolve_params(None, _WithList)["xs"] == []

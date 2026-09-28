@@ -7,14 +7,15 @@ only place a parameter is declared: its type, its default and its docstring.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from functools import cache
 from typing import Any, cast, get_args, get_type_hints
 
-from scfit.registry import Component, component
+from scfit.registry import Component, _field_types, component
 
-__all__ = ["Default", "ParamsComponent", "defaults_of", "resolve_init_params", "resolve_params", "validates"]
+__all__ = ["Default", "ParamsComponent", "resolve_init_params", "resolve_params", "validates"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +25,7 @@ class Default:
     value: Any
 
 
-def defaults_of[T: Mapping[str, Any]](spec: type[T]) -> T:
+def _defaults_of[T: Mapping[str, Any]](spec: type[T]) -> T:
     """The :class:`Default` of every key of ``spec`` that has one. A key without one is required."""
     defaults = {}
     for key, hint in get_type_hints(spec, include_extras=True).items():
@@ -34,7 +35,7 @@ def defaults_of[T: Mapping[str, Any]](spec: type[T]) -> T:
     return cast("T", defaults)
 
 
-_cached_defaults = cache(defaults_of)  # only merged from, never handed out, so sharing it is safe
+_cached_defaults = cache(_defaults_of)  # deep-copied on every merge, so a mutable default is never shared
 _VALIDATORS: dict[type, Callable[[dict[str, Any]], None]] = {}
 
 
@@ -63,7 +64,7 @@ def resolve_params[T: Mapping[str, Any]](params: Mapping[str, Any] | None, spec:
     missing = keys - set(defaults) - set(params or ())
     if missing:
         raise ValueError(f"Missing required {spec.__name__} key(s): {sorted(missing)}.")
-    merged = {**defaults, **(params or {})}
+    merged = {**copy.deepcopy(defaults), **(params or {})}
     if (validate := _VALIDATORS.get(spec)) is not None:
         validate(merged)
     return cast("T", merged)
@@ -71,7 +72,10 @@ def resolve_params[T: Mapping[str, Any]](params: Mapping[str, Any] | None, spec:
 
 @cache
 def _init_spec(cls: type) -> type:
-    return get_args(get_type_hints(cls.__init__)["params"])[0]  # `**params: Unpack[XParams]` -> XParams
+    hint = get_type_hints(cls.__init__).get("params")  # `**params: Unpack[XParams]` -> XParams
+    if hint is None or not get_args(hint):
+        raise TypeError(f"{cls.__name__}.__init__ must take `**params: Unpack[...]` to resolve its params.")
+    return get_args(hint)[0]
 
 
 def resolve_init_params(obj: object, params: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -88,11 +92,11 @@ class ParamsComponent(Component):
     """A component whose fields are one params bag. Subclasses narrow ``params`` to their TypedDict.
 
     The params are resolved on construction, so the spec records every value, defaults included, and a
-    later change of a default never alters what an old spec builds.
+    later change of a default never alters what an old spec builds. Not hashable: ``params`` is a dict.
     """
 
     params: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        spec = get_type_hints(type(self))["params"]
+        spec = cast("type[Mapping[str, Any]]", _field_types(type(self))["params"])
         object.__setattr__(self, "params", resolve_params(self.params, spec))

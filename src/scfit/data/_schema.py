@@ -1,5 +1,5 @@
 """Public data spec: the :class:`Stream` that :class:`~scfit.data.Loader` and
-:class:`~scfit.data.EvalLoader` consume, plus the read parameters they share. See ``README.md`` for the
+:class:`~scfit.data.EvalLoader` consume, plus the :class:`~scfit.data.Loader`'s :class:`SamplerParams`. See ``README.md`` for the
 model and the cellflow / sc-flow-tools mapping.
 """
 
@@ -53,7 +53,7 @@ def weight_vector(weights: Weights | None, leaves: Sequence[tuple]) -> np.ndarra
 
 
 class Stream:
-    r"""One streamed population: a source, its grouping columns, reps, weights, and read parameters.
+    r"""One streamed population: a source, its grouping columns, reps and weights.
 
     The single public unit :class:`~scfit.data.Loader` consumes. It partitions its source's cells into
     **leaves** — the unique ``group_by`` combinations — and those are what gets weighted, sampled, and

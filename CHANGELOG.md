@@ -14,12 +14,12 @@ and this project adheres to [Semantic Versioning][].
 
 - Basic tool, preprocessing and plotting functions
 - `registry.component`: the one way to register a config; makes it a frozen, keyword-only dataclass
-- `scfit.params`: parameter bags as TypedDicts with `Annotated[type, Default(value)]` keys, `resolve_params`, `validates`, and `ParamsComponent`, a component whose `params` field subclasses narrow to their TypedDict
+- `scfit.params`: parameter bags as TypedDicts with `Annotated[type, Default(value)]` keys; a key without one is required. `resolve_params`, `resolve_init_params` (resolves against the TypedDict a class's `__init__` unpacks), `validates`, and `ParamsComponent`, a component whose `params` field subclasses narrow to their TypedDict
 - `data.SamplerParams`: the sampler settings as a params TypedDict, passed as `sampler=` to `Loader` and `Loader.from_paths`, with per-stream overrides in `stream_samplers=`
 
 ### Removed
 
-- `registry.register_live`: a spec now holds only components and JSON data, and anything else raises `PortabilityError`
+- `registry.register_live`: a spec now holds only registered components and exact JSON values (no subclasses, dataclasses or non-finite floats), and anything else raises `PortabilityError`
 - `registry.build`, `Component.build` and `Component.build_spec`: each family declares its own typed `build`
 - The `type_id=` / `version=` / `versions=` class keywords: use `@component(type_id, version=..., versions=...)`
 - `data.SamplerKwargs`, the `batch_size` / `chunk_size` / `preload_nchunks` keywords, and sampler settings on `Stream`: pass `sampler=` / `stream_samplers=` to the loader

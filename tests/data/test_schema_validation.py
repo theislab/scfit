@@ -52,9 +52,9 @@ def test_stream_rejects(kw: dict, exc: type[Exception], msg: str):
         Stream("k", **kw)
 
 
-# ── Loader: read config resolution ─────────────────────────────────────────────────────────────────────
+# ── Loader: sampler resolution ─────────────────────────────────────────────────────────────────────
 def test_stream_sampler_overrides_loader():
-    # the primary sets its own batch_size=4; the loader default is 8 → the primary uses ITS OWN (4).
+    # `stream_samplers` gives the primary batch_size=4 over the loader-wide 8.
     ld = Loader(
         SRC,
         primary=Stream(KEY, group_by=COLS, weights=W),

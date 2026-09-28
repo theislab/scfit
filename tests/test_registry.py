@@ -137,5 +137,45 @@ def test_params_pin_defaults_and_keep_nested_types():
 def test_params_reject_unknown_keys():
     with pytest.raises(ValueError, match="Unknown"):
         _WithParams(params={"widht": 4})  # pyright: ignore[reportArgumentType]  (the typo is the point)
-    with pytest.raises(ValueError, match="unknown"):
+    with pytest.raises(ValueError, match="Unknown"):
         _WithParams.from_spec({"type": "test.with_params", "version": 1, "config": {"params": {"widht": 4}}})
+
+
+@component("test.node")
+class _Node(Component):
+    children: list[_Node] = dataclasses.field(default_factory=list)
+
+
+def test_a_component_may_name_itself():
+    tree = _Node(children=[_Node(), _Node(children=[_Node()])])
+    assert parse(tree.to_spec()) == tree
+
+
+@component("test.either")
+class _Either(Component):
+    enc: _OneHot | _Label | None = None
+
+
+def test_a_union_of_components_parses_each_member():
+    assert parse(_Either(enc=_Label()).to_spec()) == _Either(enc=_Label())
+
+
+class _Str(str):
+    pass
+
+
+@dataclasses.dataclass
+class _Plain:
+    x: int = 1
+
+
+@pytest.mark.parametrize(
+    "value", [_Str("a"), float("nan"), _Plain(), {1: "a"}], ids=["str_subclass", "nan", "dataclass", "int_key"]
+)
+def test_only_exact_json_and_components_are_portable(value):
+    with pytest.raises(PortabilityError):
+        to_spec(_Holder(obj=value))
+
+
+def test_tuples_are_written_as_lists():
+    assert to_spec(_Holder(obj=(1, "a")))["config"]["obj"] == [1, "a"]

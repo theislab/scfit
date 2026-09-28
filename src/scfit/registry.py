@@ -8,6 +8,7 @@ foundation toolboxes and any other ecosystem plugin subclass it, so specs stay p
 from __future__ import annotations
 
 import dataclasses
+import math
 import types
 from collections.abc import Callable, Mapping, Sequence
 from typing import (
@@ -76,7 +77,7 @@ def component[C: Component](
     """Make a `Component` subclass a frozen, keyword-only dataclass and register it under ``type_id``.
 
     Without ``type_id`` the class is a family base with fields, left unregistered. Field annotations are
-    resolved here, so an unresolvable one fails at import instead of at the first :func:`parse`.
+    resolved on first use, so a field may name its own class or one defined later in the module.
 
     Specs are written at ``version``. ``versions`` lists every version one may be read at, e.g. ``(1, 2)``
     after adding a field with a default, so v1 specs still load.
@@ -91,7 +92,6 @@ def component[C: Component](
         if not (isinstance(cls, type) and issubclass(cls, Component)):
             raise TypeError(f"@component needs a Component subclass, got {cls!r}.")
         cls = dataclasses.dataclass(frozen=True, kw_only=True)(cls)
-        _field_types(cls)
         if type_id is None:
             return cls
         existing = _REGISTRY.get(type_id)
@@ -119,22 +119,27 @@ def _has_component(tp: object) -> bool:
 
 
 def _is_json(value: object) -> bool:
-    if value is None or isinstance(value, bool | int | float | str):
+    """Exact JSON types only, so a subclass is never written as its base and read back as something else."""
+    if type(value) is float:
+        return math.isfinite(value)
+    if value is None or type(value) in (bool, int, str):
         return True
-    if isinstance(value, list):
+    if type(value) is list:
         return all(_is_json(v) for v in value)
-    return isinstance(value, dict) and all(isinstance(k, str) and _is_json(v) for k, v in value.items())
+    return type(value) is dict and all(type(k) is str and _is_json(v) for k, v in value.items())
 
 
 def _unstructure_field(value: object) -> object:
     if isinstance(value, Component):
         return to_spec(value)  # nested sub-component -> nested envelope
-    if isinstance(value, Mapping):
-        if not all(isinstance(k, str) for k in value):
+    if type(value) is dict:
+        if not all(type(k) is str for k in value):
             raise PortabilityError(f"dict keys must be strings to be portable; got {sorted(map(repr, value))}.")
         return {k: _unstructure_field(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [_unstructure_field(v) for v in value]
+    if type(value) in (list, tuple):
+        return [_unstructure_field(v) for v in value]  # pyright: ignore[reportGeneralTypeIssues]
+    if dataclasses.is_dataclass(value):  # a shape of its own must be a component, so its type is recorded
+        raise PortabilityError(f"{type(value).__name__} is a dataclass, not a registered component; make it one.")
     leaf = _converter.unstructure(value)
     if not _is_json(leaf):  # portable means components and JSON data; anything else is a live object
         raise PortabilityError(
@@ -164,9 +169,11 @@ def _structure_field(value: object, ftype: Any) -> object:
     if origin is Union or origin is types.UnionType:  # incl. Optional and the spec|live escape hatch
         if value is None and type(None) in args:
             return None
-        comp = next((a for a in args if _is_component(a)), None)
-        if comp is not None and isinstance(value, Mapping) and "type" in value:
-            return _structure_component(value, comp)  # always take the spec branch on load
+        comps = [a for a in args if _is_component(a)]
+        if comps and isinstance(value, Mapping) and "type" in value:  # always take the spec branch on load
+            target = _REGISTRY.get(value["type"])
+            expected = next((c for c in comps if target is not None and issubclass(target, c)), comps[0])
+            return _structure_component(value, expected)
         others = [a for a in args if a is not type(None) and not _is_component(a)]
         if len(others) == 1:
             return _structure_field(value, others[0])
@@ -177,7 +184,7 @@ def _structure_field(value: object, ftype: Any) -> object:
         hints = get_type_hints(ftype)
         unknown = set(value) - set(hints)
         if unknown:
-            raise ValueError(f"{ftype.__name__}: unknown key(s) {sorted(unknown)}.")
+            raise ValueError(f"Unknown {ftype.__name__} key(s): {sorted(unknown)}; expected from {sorted(hints)}.")
         return {k: _structure_field(v, hints[k]) for k, v in value.items()}
     if args and _has_component(ftype):  # a container of components: recurse so each keeps its type
         if isinstance(origin, type) and issubclass(origin, Mapping) and isinstance(value, Mapping):
