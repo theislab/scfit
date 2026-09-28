@@ -7,7 +7,8 @@ suite honest about the public :mod:`scfit.registry` surface.
 from __future__ import annotations
 
 import dataclasses
-from typing import Annotated, TypedDict, Unpack
+from collections.abc import Mapping
+from typing import Annotated, Any, TypedDict, Unpack
 
 import pytest
 
@@ -122,8 +123,8 @@ class _WidgetParams(TypedDict, total=False):
 
 
 @component("test.with_params")
-class _WithParams(ParamsComponent):
-    params: _WidgetParams = dataclasses.field(default_factory=lambda: _WidgetParams())
+class _WithParams(ParamsComponent[_WidgetParams]):
+    pass
 
 
 def test_params_pin_defaults_and_keep_nested_types():
@@ -187,8 +188,8 @@ class _Impl:
 
 
 @component("test.linked", builds=_Impl)
-class _Linked(ParamsComponent):
-    params: _WidgetParams = dataclasses.field(default_factory=lambda: _WidgetParams())
+class _Linked(ParamsComponent[_WidgetParams]):
+    pass
 
 
 class _OtherParams(TypedDict, total=False):
@@ -200,8 +201,8 @@ class _OtherImpl:
 
 
 @component("test.mislinked", builds=_OtherImpl)
-class _Mislinked(ParamsComponent):
-    params: _WidgetParams = dataclasses.field(default_factory=lambda: _WidgetParams())
+class _Mislinked(ParamsComponent[_WidgetParams]):
+    pass
 
 
 def test_config_is_found_from_its_implementation():
@@ -218,5 +219,20 @@ def test_one_config_per_implementation():
     with pytest.raises(ValueError, match="already built by"):
 
         @component("test.second", builds=_Impl)
-        class _Second(ParamsComponent):
-            params: _WidgetParams = dataclasses.field(default_factory=lambda: _WidgetParams())
+        class _Second(ParamsComponent[_WidgetParams]):
+            pass
+
+
+@component()
+class _Intermediate[Q: Mapping[str, Any]](ParamsComponent[Q]):
+    pass
+
+
+@component("test.deep")
+class _Deep(_Intermediate[_WidgetParams]):
+    pass
+
+
+def test_params_type_resolves_through_generic_bases():
+    assert _Deep().params["width"] == 3
+    assert _Deep.from_spec(_Deep(params={"width": 5}).to_spec()) == _Deep(params={"width": 5})

@@ -16,6 +16,7 @@ from typing import (
     ClassVar,
     Self,
     TypeGuard,
+    TypeVar,
     Union,
     dataclass_transform,
     get_args,
@@ -127,9 +128,23 @@ def config_of(implementation: type) -> type[Component]:
         raise KeyError(f"no config builds {implementation.__name__}; register one with builds=.") from None
 
 
+def _type_arguments(cls: type) -> dict[object, object]:
+    """``{type parameter: argument}`` bound anywhere in ``cls``'s bases, e.g. ``ParamsComponent[X]`` gives ``P: X``."""
+    bound: dict[object, object] = {}
+    for klass in cls.__mro__:  # most derived first, so an argument that is itself a parameter resolves
+        for base in getattr(klass, "__orig_bases__", ()):
+            parameters = getattr(get_origin(base), "__type_params__", ())
+            for parameter, argument in zip(parameters, get_args(base), strict=False):
+                bound[parameter] = bound.get(argument, argument)
+    return bound
+
+
 def _field_types(cls: type) -> dict[str, object]:
+    """``cls``'s field annotations, with the type arguments of generic bases filled in."""
     if cls not in _hints_cache:
-        _hints_cache[cls] = get_type_hints(cls)
+        bound = _type_arguments(cls)
+        hints = get_type_hints(cls)
+        _hints_cache[cls] = {k: bound.get(v, v) if isinstance(v, TypeVar) else v for k, v in hints.items()}
     return _hints_cache[cls]
 
 

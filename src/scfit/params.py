@@ -1,7 +1,7 @@
 """Parameter bags as TypedDicts: each key declares its default with ``Annotated[type, Default(value)]``.
 
-A class takes ``**params: Unpack[XParams]`` and calls :func:`resolve_params` once; its config subclasses
-:class:`ParamsComponent`, narrows ``params: XParams`` and forwards it with ``**``. The TypedDict is then the
+A class takes ``**params: Unpack[XParams]`` and calls :func:`resolve_init_params` once; its config subclasses
+``ParamsComponent[XParams]`` and forwards ``self.params`` with ``**``. The TypedDict is then the
 only place a parameter is declared: its type, its default and its docstring.
 """
 
@@ -88,14 +88,14 @@ def resolve_init_params(obj: object, params: Mapping[str, Any]) -> Mapping[str, 
 
 
 @component()
-class ParamsComponent(Component):
-    """A component whose fields are one params bag. Subclasses narrow ``params`` to their TypedDict.
+class ParamsComponent[P: Mapping[str, Any]](Component):
+    """A component whose fields are one params bag, typed by the generic argument: ``ParamsComponent[XParams]``.
 
     The params are resolved on construction, so the spec records every value, defaults included, and a
     later change of a default never alters what an old spec builds. Not hashable: ``params`` is a dict.
     """
 
-    params: Mapping[str, Any] = field(default_factory=dict)
+    params: P = field(default_factory=dict)  # pyright: ignore[reportAssignmentType]  (resolved in __post_init__)
 
     def __post_init__(self) -> None:
         spec = _linked_spec(type(self))
@@ -103,7 +103,7 @@ class ParamsComponent(Component):
 
 
 @cache
-def _linked_spec(cls: type[ParamsComponent]) -> type[Mapping[str, Any]]:
+def _linked_spec(cls: type[ParamsComponent[Any]]) -> type[Mapping[str, Any]]:
     """The config's params TypedDict, checked once against the one its ``builds`` class unpacks."""
     spec = cast("type[Mapping[str, Any]]", _field_types(cls)["params"])
     if cls.__builds__ is not None and _init_spec(cls.__builds__) is not spec:
