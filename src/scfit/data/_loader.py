@@ -189,7 +189,7 @@ class Loader:
         try:  # annbatch enforces its own run-length rule for chunk>1; forward with stream context
             return ClassSampler(
                 chunk_size=cfg.chunk_size,
-                preload_nchunks=cfg.window,
+                preload_nchunks=cfg.preload_nchunks,
                 batch_size=cfg.batch_size,
                 classes=self._st[name]["cats"],
                 num_samples=self._pass_len * cfg.batch_size,
@@ -209,7 +209,7 @@ class Loader:
             return BoundClassSampler(
                 deepcopy(self._oracle_sampler),
                 cfg.chunk_size,
-                cfg.window,
+                cfg.preload_nchunks,
                 cfg.batch_size,
                 classes_to_bind_on=cats,
                 # primary tuple position → link tuple position, per shared ``match_on`` column

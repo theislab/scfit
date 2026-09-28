@@ -55,18 +55,14 @@ def test_stream_rejects(kw: dict, exc: type[Exception], msg: str):
 @pytest.mark.parametrize(
     ("kw", "msg"),
     [
-        pytest.param({"batch_size": 8, "chunk_size": 3}, "divide", id="chunk_not_dividing"),
-        pytest.param({"batch_size": 0}, "divide", id="zero_batch"),
+        pytest.param({"batch_size": 8, "chunk_size": 3, "preload_nchunks": 8}, "divide", id="chunk_not_dividing"),
+        pytest.param({"batch_size": 0, "preload_nchunks": 1}, "divide", id="zero_batch"),
         pytest.param({"batch_size": 8, "chunk_size": 2, "preload_nchunks": 3}, "multiple", id="bad_window"),
     ],
 )
 def test_read_config_rejects(kw: dict, msg: str):
     with pytest.raises(ValueError, match=msg):
         ReadConfig(**kw)
-
-
-def test_read_config_window_defaults_to_one_batch():
-    assert ReadConfig(batch_size=8, chunk_size=2).window == 4
 
 
 # ── Loader: read config resolution ─────────────────────────────────────────────────────────────────────

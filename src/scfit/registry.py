@@ -15,7 +15,6 @@ from typing import (
     ClassVar,
     Self,
     TypeGuard,
-    TypeVar,
     Union,
     dataclass_transform,
     get_args,
@@ -34,7 +33,6 @@ __all__ = ["Component", "PortabilityError", "component", "to_spec", "parse", "re
 _REGISTRY: dict[str, type[Component]] = {}
 _converter = cattrs.Converter(forbid_extra_keys=True)  # loud on a typo'd LEAF field
 _hints_cache: dict[type, dict[str, object]] = {}
-_C = TypeVar("_C", bound="Component")
 
 
 class PortabilityError(Exception):
@@ -72,9 +70,9 @@ class Component:
 
 
 @dataclass_transform(frozen_default=True, kw_only_default=True)
-def component(
+def component[C: Component](
     type_id: str | None = None, *, version: int = 1, versions: tuple[int, ...] | None = None
-) -> Callable[[type[_C]], type[_C]]:
+) -> Callable[[type[C]], type[C]]:
     """Make a `Component` subclass a frozen, keyword-only dataclass and register it under ``type_id``.
 
     Without ``type_id`` the class is a family base with fields, left unregistered. Field annotations are
@@ -89,7 +87,7 @@ def component(
     if version not in accepted or any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in accepted):
         raise ValueError(f"{type_id!r}: bad version/versions ({version!r}, {sorted(accepted)}).")
 
-    def register(cls: type[_C]) -> type[_C]:
+    def register(cls: type[C]) -> type[C]:
         if not (isinstance(cls, type) and issubclass(cls, Component)):
             raise TypeError(f"@component needs a Component subclass, got {cls!r}.")
         cls = dataclasses.dataclass(frozen=True, kw_only=True)(cls)

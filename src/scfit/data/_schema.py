@@ -36,29 +36,21 @@ class ReadConfig(Component):
         annbatch read-slice size. ``1`` reads per row (any layout); ``>1`` reads contiguous chunks (each
         sampled leaf must sit in a contiguous run of at least ``chunk_size``). Must divide ``batch_size``.
     preload_nchunks
-        Chunks per annbatch read window, a positive multiple of ``batch_size // chunk_size``. ``None`` is
-        exactly that.
+        Chunks per annbatch read window, a positive multiple of ``batch_size // chunk_size``.
     """
 
     batch_size: int
     chunk_size: int = 1
-    preload_nchunks: int | None = None
+    preload_nchunks: int
 
     def __post_init__(self) -> None:
         if self.batch_size <= 0 or self.chunk_size <= 0 or self.batch_size % self.chunk_size:
             raise ValueError(f"chunk_size={self.chunk_size} must be positive and divide batch_size={self.batch_size}.")
-        if self.preload_nchunks is not None and (
-            self.preload_nchunks <= 0 or self.preload_nchunks % (self.batch_size // self.chunk_size)
-        ):
+        if self.preload_nchunks <= 0 or self.preload_nchunks % (self.batch_size // self.chunk_size):
             raise ValueError(
                 f"preload_nchunks={self.preload_nchunks} must be a positive multiple of "
                 f"batch_size // chunk_size = {self.batch_size // self.chunk_size}."
             )
-
-    @property
-    def window(self) -> int:
-        """Chunks per read window, with the ``None`` default resolved."""
-        return self.preload_nchunks or self.batch_size // self.chunk_size
 
 
 def weight_vector(weights: Weights | None, leaves: Sequence[tuple]) -> np.ndarray:
