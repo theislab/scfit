@@ -10,11 +10,11 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from functools import cache
-from typing import Any, cast, get_type_hints
+from typing import Any, cast, get_args, get_type_hints
 
 from scfit.registry import Component, component
 
-__all__ = ["Default", "ParamsComponent", "defaults_of", "resolve_params", "validates"]
+__all__ = ["Default", "ParamsComponent", "defaults_of", "resolve_init_params", "resolve_params", "validates"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +67,20 @@ def resolve_params[T: Mapping[str, Any]](params: Mapping[str, Any] | None, spec:
     if (validate := _VALIDATORS.get(spec)) is not None:
         validate(merged)
     return cast("T", merged)
+
+
+@cache
+def _init_spec(cls: type) -> type:
+    return get_args(get_type_hints(cls.__init__)["params"])[0]  # `**params: Unpack[XParams]` -> XParams
+
+
+def resolve_init_params(obj: object, params: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Resolve ``params`` against the TypedDict that ``type(obj).__init__`` takes as ``**params: Unpack[...]``.
+
+    Called from a base ``__init__``, it resolves against the most derived class's params, so a subclass that
+    extends them only annotates its own ``__init__``.
+    """
+    return resolve_params(params, _init_spec(type(obj)))
 
 
 @component()

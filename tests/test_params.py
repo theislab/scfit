@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated, Required, TypedDict
+from typing import Annotated, Required, TypedDict, Unpack
 
 import pytest
 
-from scfit.params import Default, defaults_of, resolve_params, validates
+from scfit.params import Default, defaults_of, resolve_init_params, resolve_params, validates
 
 
 class _Params(TypedDict, total=False):
@@ -37,3 +37,22 @@ def test_required_key_has_no_default_and_must_be_given():
     assert resolve_params({"size": 2}, _WithRequired) == {"size": 2, "name": "a"}
     with pytest.raises(ValueError, match="Missing required"):
         resolve_params({}, _WithRequired)
+
+
+class _Base:
+    def __init__(self, **params: Unpack[_Params]) -> None:
+        self.params = resolve_init_params(self, params)
+
+
+class _More(_Params, total=False):
+    extra: Annotated[bool, Default(True)]
+
+
+class _Derived(_Base):
+    def __init__(self, **params: Unpack[_More]) -> None:
+        super().__init__(**params)
+
+
+def test_init_params_resolve_against_the_most_derived_spec():
+    assert _Base().params == {"size": 4, "name": "a"}
+    assert _Derived(size=2).params == {"size": 2, "name": "a", "extra": True}
