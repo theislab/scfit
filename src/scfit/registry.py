@@ -10,21 +10,21 @@ from __future__ import annotations
 import dataclasses
 import types
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Union, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, Self, TypeGuard, Union, get_args, get_origin, get_type_hints
 
 # Deliberately cattrs, not pydantic/msgspec: this is a public foundation downstream packages subclass, so
 # the dependency surface stays minimal and the on-disk format stable. It also coerces OmegaConf
 # ListConfig/DictConfig leaf values natively. See the design decision for the full rationale.
 import cattrs
 
-if TYPE_CHECKING:
-    import numpy as np
+__all__ = ["Component", "RngComponent", "PortabilityError", "to_spec", "parse", "register_live"]
 
-__all__ = ["Component", "RngComponent", "PortabilityError", "to_spec", "parse", "build", "register_live"]
+type JSON = None | bool | int | float | str | list[JSON] | dict[str, JSON]
+"""What a spec is made of."""
 
 _REGISTRY: dict[str, type[Component]] = {}
 _converter = cattrs.Converter(forbid_extra_keys=True)  # loud on a typo'd LEAF field
-_hints_cache: dict[type, dict[str, Any]] = {}
+_hints_cache: dict[type, dict[str, object]] = {}
 
 
 class PortabilityError(Exception):
@@ -39,10 +39,11 @@ class Component:
     *abstract family base* (e.g. ``Objective``, ``Combiner``) and is intentionally left unregistered so it
     can be used as the ``expected`` family in :func:`parse` / :meth:`from_spec`.
 
-    Every concrete config owns ``build(self, context) -> runtime``; ``__post_init__`` validation, derived
-    ``@property`` sizing, and construction all live on the one class.
+    A component is only the portable description. How it turns into a runtime object is up to its family:
+    a family base declares its own typed ``build``, taking whatever runtime inputs that family needs.
     """
 
+    __dataclass_fields__: ClassVar[dict[str, dataclasses.Field[Any]]]  # concrete configs are dataclasses
     __type_id__: ClassVar[str]
     __version__: ClassVar[int]  # stamped when WRITING a spec
     __versions__: ClassVar[frozenset[int]]  # accepted set when READING a spec
@@ -69,16 +70,12 @@ class Component:
         cls.__type_id__, cls.__version__, cls.__versions__ = type_id, version, accepted
         _REGISTRY[type_id] = cls
 
-    def build(self, context: Any = None) -> Any:
-        """Construct the runtime object this config describes (overridden by concrete configs)."""
-        raise NotImplementedError(f"{type(self).__name__} must implement build(self, context).")
-
-    def to_spec(self) -> dict[str, Any]:
+    def to_spec(self) -> dict[str, JSON]:
         """Return this config as a portable ``{type, version, config}`` dict; raises on live instances."""
         return to_spec(self)
 
     @classmethod
-    def from_spec(cls, spec: Mapping[str, Any]) -> Any:
+    def from_spec(cls, spec: Mapping[str, object]) -> Self:
         """Parse a spec into a config, enforcing that it is a ``cls`` (family-scoped, typed entry).
 
         Replaces the per-family ``validate_<family>_spec`` free functions: ``Combiner.from_spec(spec)``
@@ -86,22 +83,13 @@ class Component:
         """
         return _structure_component(spec, cls)
 
-    @classmethod
-    def build_spec(cls, spec: Mapping[str, Any], context: Any = None) -> Any:
-        """``from_spec(spec).build(context)`` — replaces the per-family ``build_<family>`` free functions."""
-        return _structure_component(spec, cls).build(context)
-
 
 class RngComponent(Component):
-    """Family marker for a config whose ``build`` draws randomness from a caller-supplied ``rng``.
+    """Family marker for a config whose ``build`` takes a keyword-only ``rng: numpy.random.Generator``.
 
     Such a config holds no seed. The caller derives ``rng`` from the run's seed, so every stream traces back
     to one place. A component needing several independent streams splits its ``rng`` with ``rng.spawn(n)``.
     """
-
-    def build(self, context: Any = None, *, rng: np.random.Generator) -> Any:
-        """Construct the runtime object, drawing all randomness from ``rng``."""
-        raise NotImplementedError(f"{type(self).__name__} must implement build(self, context, *, rng).")
 
 
 def register_live(cls: type) -> type:
@@ -111,7 +99,7 @@ def register_live(cls: type) -> type:
     :func:`to_spec` on that config raises :class:`PortabilityError` instead of silently dropping it.
     """
 
-    def _raise(_obj: Any) -> Any:
+    def _raise(_obj: object) -> JSON:
         raise PortabilityError(
             f"{cls.__name__} is a runtime-only instance and has no portable config; pass a Component spec "
             f"instead of a live object to make this config serializable."
@@ -121,37 +109,41 @@ def register_live(cls: type) -> type:
     return cls
 
 
-def _field_types(cls: type) -> dict[str, Any]:
+def _field_types(cls: type) -> dict[str, object]:
     if cls not in _hints_cache:
         _hints_cache[cls] = get_type_hints(cls)
     return _hints_cache[cls]
 
 
-def _is_component(tp: Any) -> bool:
+def _is_component(tp: object) -> TypeGuard[type[Component]]:
     return isinstance(tp, type) and issubclass(tp, Component)
 
 
-def _has_component(tp: Any) -> bool:
+def _has_component(tp: object) -> bool:
     return _is_component(tp) or any(_has_component(a) for a in get_args(tp))
 
 
-def _unstructure_field(value: Any) -> Any:
+def _unstructure_field(value: object) -> JSON:
     if isinstance(value, Component):
         return to_spec(value)  # nested sub-component -> nested envelope
     if isinstance(value, Mapping):
         return {_converter.unstructure(k): _unstructure_field(v) for k, v in value.items()}
-    if type(value) in (list, tuple):
-        return type(value)(_unstructure_field(v) for v in value)
+    if isinstance(value, list | tuple):
+        return [_unstructure_field(v) for v in value]
     return _converter.unstructure(value)  # leaves + live-instance guard (raises)
 
 
-def to_spec(config: Component) -> dict[str, Any]:
+def to_spec(config: Component) -> dict[str, JSON]:
     """Config -> portable ``{type, version, config}`` dict (JSON-ready). Raises on live instances."""
     inner = {f.name: _unstructure_field(getattr(config, f.name)) for f in dataclasses.fields(config)}
     return {"type": config.__type_id__, "version": config.__version__, "config": inner}
 
 
-def _structure_field(value: Any, ftype: Any) -> Any:
+def _structure_field(value: object, ftype: Any) -> object:
+    """Structure one spec value as the annotation ``ftype``, e.g. ``dict[str, Enc] | None``.
+
+    ``ftype`` is ``Any`` because typing cannot yet express a type form (PEP 747 ``TypeForm``).
+    """
     origin, args = get_origin(ftype), get_args(ftype)
     if origin is Union or origin is types.UnionType:  # incl. Optional and the spec|live escape hatch
         if value is None and type(None) in args:
@@ -166,18 +158,18 @@ def _structure_field(value: Any, ftype: Any) -> Any:
     if _is_component(ftype):
         return _structure_component(value, ftype)
     if args and _has_component(ftype):  # a container of components: recurse so each keeps its type
-        if isinstance(origin, type) and issubclass(origin, Mapping):
+        if isinstance(origin, type) and issubclass(origin, Mapping) and isinstance(value, Mapping):
             key_type, value_type = args
             return {_converter.structure(k, key_type): _structure_field(v, value_type) for k, v in value.items()}
-        if origin is tuple and not (len(args) == 2 and args[1] is Ellipsis):
+        if origin is tuple and isinstance(value, Sequence) and not (len(args) == 2 and args[1] is Ellipsis):
             return tuple(_structure_field(v, t) for v, t in zip(value, args, strict=True))
-        if isinstance(origin, type) and issubclass(origin, Sequence):
+        if isinstance(origin, type) and issubclass(origin, Sequence) and isinstance(value, Sequence):
             items = [_structure_field(v, args[0]) for v in value]
             return tuple(items) if origin is tuple else items
     return _converter.structure(value, ftype)  # cattrs does the leaf recursion + OmegaConf coercion
 
 
-def _structure_component(spec: Any, expected: type[Component]) -> Component:
+def _structure_component[C: Component](spec: object, expected: type[C]) -> C:
     if not isinstance(spec, Mapping):
         raise TypeError(f"Expected a spec mapping; found {type(spec).__name__}.")
     unknown_env = set(spec) - {"type", "version", "config"}
@@ -210,11 +202,6 @@ def _structure_component(spec: Any, expected: type[Component]) -> Component:
     return target(**kwargs)  # __post_init__ runs here (validation + canonicalization)
 
 
-def parse(spec: Mapping[str, Any]) -> Component:
+def parse(spec: Mapping[str, object]) -> Component:
     """``{type, version, config}`` dict -> validated :class:`Component` (dispatched by the registry)."""
     return _structure_component(spec, Component)
-
-
-def build(spec: Mapping[str, Any], context: Any = None) -> Any:
-    """Parse then build in one call."""
-    return _structure_component(spec, Component).build(context)

@@ -99,8 +99,8 @@ envs.docs.dependency-groups = [ "doc" ]
 # optional extra (torch) into the test env.
 envs.hatch-test.features = [ "torch" ]
 envs.hatch-test.matrix = [
-  # Test the lowest and highest supported Python versions with normal deps
-  { deps = [ "stable" ], python = [ "3.12", "3.14" ] },
+  # Test every supported Python version with normal deps
+  { deps = [ "stable" ], python = [ "3.12", "3.13", "3.14" ] },
   # Test the newest supported Python version also with pre-release deps
   { deps = [ "pre" ], python = [ "3.14" ] },
 ]
@@ -151,6 +151,9 @@ lint.per-file-ignores."*/__init__.py" = [ "F401" ]
 lint.per-file-ignores."docs/*" = [ "I" ]
 lint.per-file-ignores."tests/*" = [ "D" ]
 lint.pydocstyle.convention = "numpy"
+
+[tool.pyright]
+pythonVersion = "3.12"
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]
