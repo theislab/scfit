@@ -6,11 +6,12 @@ model and the cellflow / sc-flow-tools mapping.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import Annotated, Required, TypedDict
 
 import anndata as ad
 import numpy as np
 
-from scfit.registry import Component, component
+from scfit.params import Default, validates
 
 type Container = ad.AnnData | list[ad.AnnData]
 
@@ -18,39 +19,33 @@ type Container = ad.AnnData | list[ad.AnnData]
 # excluded — that IS the selection, native to annbatch's ClassSampler. ``None`` means uniform over every group.
 Weights = Mapping[tuple, float]
 
-__all__ = ["Container", "ReadConfig", "Stream", "Weights", "weight_vector"]
+__all__ = ["Container", "SamplerParams", "Stream", "Weights", "weight_vector"]
 
 # Reserved name of the root / target (primary) stream — shared by Loader and EvalLoader.
 _PRIMARY = "primary"
 
 
-@component("scfit.read")
-class ReadConfig(Component):
-    """The annbatch read parameters of a stream, set on a :class:`Stream` or as a :class:`~scfit.data.Loader` default.
+class SamplerParams(TypedDict, total=False):
+    """annbatch's sampler settings for one stream, passed as ``sampler=`` to :class:`~scfit.data.Loader`."""
 
-    Parameters
-    ----------
-    batch_size
-        Rows per emitted batch for this stream (source and target row counts need not match).
-    chunk_size
-        annbatch read-slice size. ``1`` reads per row (any layout); ``>1`` reads contiguous chunks (each
-        sampled leaf must sit in a contiguous run of at least ``chunk_size``). Must divide ``batch_size``.
-    preload_nchunks
-        Chunks per annbatch read window, a positive multiple of ``batch_size // chunk_size``.
-    """
+    batch_size: Required[int]
+    """Rows per emitted batch for the stream. Source and target row counts need not match."""
+    preload_nchunks: Required[int]
+    """Chunks per annbatch read window, a positive multiple of ``batch_size // chunk_size``."""
+    chunk_size: Annotated[int, Default(1)]
+    """annbatch read-slice size. ``1`` reads per row (any layout); ``>1`` reads contiguous chunks, so each
+    sampled leaf must sit in a contiguous run of at least ``chunk_size``. Must divide ``batch_size``."""
 
-    batch_size: int
-    chunk_size: int = 1
-    preload_nchunks: int
 
-    def __post_init__(self) -> None:
-        if self.batch_size <= 0 or self.chunk_size <= 0 or self.batch_size % self.chunk_size:
-            raise ValueError(f"chunk_size={self.chunk_size} must be positive and divide batch_size={self.batch_size}.")
-        if self.preload_nchunks <= 0 or self.preload_nchunks % (self.batch_size // self.chunk_size):
-            raise ValueError(
-                f"preload_nchunks={self.preload_nchunks} must be a positive multiple of "
-                f"batch_size // chunk_size = {self.batch_size // self.chunk_size}."
-            )
+@validates(SamplerParams)
+def _check_sampler(p: dict[str, int]) -> None:
+    batch, chunk, window = p["batch_size"], p["chunk_size"], p["preload_nchunks"]
+    if batch <= 0 or chunk <= 0 or batch % chunk:
+        raise ValueError(f"chunk_size={chunk} must be positive and divide batch_size={batch}.")
+    if window <= 0 or window % (batch // chunk):
+        raise ValueError(
+            f"preload_nchunks={window} must be a positive multiple of batch_size // chunk_size = {batch // chunk}."
+        )
 
 
 def weight_vector(weights: Weights | None, leaves: Sequence[tuple]) -> np.ndarray:
@@ -102,8 +97,6 @@ class Stream:
     in_memory
         Materialize this stream's selected (positive-weight) cells into RAM once, instead of re-reading the
         source each batch (for a small, frequently re-drawn pool such as a matched control).
-    read
-        This stream's :class:`ReadConfig`. ``None`` inherits the :class:`~scfit.data.Loader`'s.
     """
 
     def __init__(
@@ -115,7 +108,6 @@ class Stream:
         weights: Weights | None = None,
         match_on: Sequence[str] = (),
         in_memory: bool = False,
-        read: ReadConfig | None = None,
     ) -> None:
         keys = (source_key,) if isinstance(source_key, str) else tuple(source_key)
         if not keys or not all(isinstance(k, str) and k for k in keys):
@@ -147,7 +139,6 @@ class Stream:
         self.weights = weights
         self.match_on = tuple(match_on)
         self.in_memory = in_memory
-        self.read = read
 
 
 def validate_links(primary: Stream, links: Mapping[str, Stream]) -> None:

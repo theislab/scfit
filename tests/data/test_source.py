@@ -14,10 +14,10 @@ import pandas as pd
 import pytest
 from scheme_helpers import KEY, encoded_adata, perturbation_streams
 
-from scfit.data import Loader, ReadConfig, Stream
+from scfit.data import Loader, Stream
 from scfit.data._source import Source
 
-READ = {"read": ReadConfig(batch_size=4, chunk_size=1, preload_nchunks=4), "to": None}
+READ = {"sampler": {"batch_size": 4, "chunk_size": 1, "preload_nchunks": 4}, "to": None}
 
 
 def _file(cell_types, file_id: int, n: int = 8) -> ad.AnnData:
@@ -68,6 +68,6 @@ def test_shared_source_factorized_once():
     adata = encoded_adata(("A", "B"), ("control", "d1", "d2"), 8)
     primary, links = perturbation_streams(adata)
     loader = Loader(
-        {KEY: adata}, primary=primary, links=links, read=ReadConfig(batch_size=8, chunk_size=1, preload_nchunks=8)
+        {KEY: adata}, primary=primary, links=links, sampler={"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
     )
     assert len(loader._sources[KEY]._leaf_cache) == 1  # one (group_by) entry despite two streams

@@ -11,8 +11,11 @@ import dataclasses
 import types
 from collections.abc import Callable, Mapping, Sequence
 from typing import (
+    Annotated,
     Any,
     ClassVar,
+    NotRequired,
+    Required,
     Self,
     TypeGuard,
     Union,
@@ -28,7 +31,7 @@ from typing import (
 # ListConfig/DictConfig leaf values natively. See the design decision for the full rationale.
 import cattrs
 
-__all__ = ["Component", "PortabilityError", "component", "to_spec", "parse", "register_live"]
+__all__ = ["Component", "PortabilityError", "component", "to_spec", "parse", "register_live", "required_keys"]
 
 _REGISTRY: dict[str, type[Component]] = {}
 _converter = cattrs.Converter(forbid_extra_keys=True)  # loud on a typo'd LEAF field
@@ -127,6 +130,22 @@ def _field_types(cls: type) -> dict[str, object]:
     return _hints_cache[cls]
 
 
+def required_keys(spec: type) -> frozenset[str]:
+    """The keys a TypedDict requires, read from its ``Required`` / ``NotRequired`` markers.
+
+    ``__required_keys__`` misses the markers when annotations are strings (``from __future__ import
+    annotations``), so resolve the hints and read them there.
+    """
+    required = set()
+    for key, hint in get_type_hints(spec, include_extras=True).items():
+        while get_origin(hint) is Annotated:
+            hint = get_args(hint)[0]
+        marker = get_origin(hint)
+        if marker is Required or (marker is not NotRequired and key in spec.__required_keys__):
+            required.add(key)
+    return frozenset(required)
+
+
 def _is_component(tp: object) -> TypeGuard[type[Component]]:
     return isinstance(tp, type) and issubclass(tp, Component)
 
@@ -176,7 +195,7 @@ def _structure_field(value: object, ftype: Any) -> object:
         return _structure_component(value, ftype)
     if is_typeddict(ftype) and isinstance(value, Mapping):  # a params bag: each key keeps its own type
         hints = get_type_hints(ftype)
-        unknown, missing = set(value) - set(hints), ftype.__required_keys__ - set(value)
+        unknown, missing = set(value) - set(hints), required_keys(ftype) - set(value)
         if unknown or missing:
             raise ValueError(f"{ftype.__name__}: unknown key(s) {sorted(unknown)}, missing {sorted(missing)}.")
         return {k: _structure_field(v, hints[k]) for k, v in value.items()}

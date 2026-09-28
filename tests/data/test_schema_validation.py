@@ -10,13 +10,14 @@ from __future__ import annotations
 import pytest
 from scheme_helpers import KEY, encoded_adata, uniform
 
-from scfit.data import Loader, ReadConfig, Stream
+from scfit.data import Loader, SamplerParams, Stream
+from scfit.params import resolve_params
 
 ADATA = encoded_adata(("A", "B"), ("d1", "d2"), 8)  # 4 groups × 8 cells (perturbed only — no control needed)
 SRC = {KEY: ADATA}  # the sources mapping every Loader case below streams from
 COLS = ("cell_line", "drug")
 W = uniform([("A", "d1"), ("A", "d2"), ("B", "d1"), ("B", "d2")])
-READ = ReadConfig(batch_size=8, chunk_size=1, preload_nchunks=8)
+SAMPLER = {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
 
 
 # ── Stream: shape guards (no Loader built) ───────────────────────────────────────────────────────────
@@ -28,7 +29,7 @@ def test_rep_normalizes_to_tuple():
 
 def test_metadata_only_stream_rejected_by_training_loader():
     with pytest.raises(ValueError, match="EvalLoader-only"):
-        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W, reps=()), read=READ, seed=0)
+        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W, reps=()), sampler=SAMPLER, seed=0)
 
 
 def test_source_key_must_be_non_empty_string():
@@ -60,9 +61,9 @@ def test_stream_rejects(kw: dict, exc: type[Exception], msg: str):
         pytest.param({"batch_size": 8, "chunk_size": 2, "preload_nchunks": 3}, "multiple", id="bad_window"),
     ],
 )
-def test_read_config_rejects(kw: dict, msg: str):
+def test_sampler_params_rejected(kw: dict, msg: str):
     with pytest.raises(ValueError, match=msg):
-        ReadConfig(**kw)
+        resolve_params(kw, SamplerParams)
 
 
 # ── Loader: read config resolution ─────────────────────────────────────────────────────────────────────
@@ -70,27 +71,28 @@ def test_stream_sampler_overrides_loader():
     # the primary sets its own batch_size=4; the loader default is 8 → the primary uses ITS OWN (4).
     ld = Loader(
         SRC,
-        primary=Stream(KEY, group_by=COLS, weights=W, read=ReadConfig(batch_size=4, chunk_size=1, preload_nchunks=4)),
-        read=READ,
+        primary=Stream(KEY, group_by=COLS, weights=W),
+        sampler=SAMPLER,
+        stream_samplers={"primary": {"batch_size": 4, "chunk_size": 1, "preload_nchunks": 4}},
         seed=0,
     )
-    assert ld._cfg["primary"].batch_size == 4
+    assert ld._cfg["primary"]["batch_size"] == 4
     assert next(iter(ld))["primary"]["X"].shape[0] == 4  # and it really yields 4-row batches
 
 
 def test_stream_inherits_loader_sampler():
-    ld = Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), read=READ, seed=0)
-    assert ld._cfg["primary"].batch_size == 8
+    ld = Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), sampler=SAMPLER, seed=0)
+    assert ld._cfg["primary"]["batch_size"] == 8
 
 
-def test_no_sampler_on_either_raises():
-    with pytest.raises(ValueError, match="no ReadConfig"):
-        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), seed=0)
+def test_stream_samplers_must_name_a_stream():
+    with pytest.raises(ValueError, match="unknown stream"):
+        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), sampler=SAMPLER, stream_samplers={"ctlr": SAMPLER})
 
 
 def test_source_key_not_in_sources_raises():
     with pytest.raises(ValueError, match="source_key 'missing' not in sources"):
-        Loader(SRC, primary=Stream("missing", group_by=COLS, weights=W), read=READ, seed=0)
+        Loader(SRC, primary=Stream("missing", group_by=COLS, weights=W), sampler=SAMPLER, seed=0)
 
 
 # ── Loader: cross-stream guards ────────────────────────────────────────────────────────────────────────
@@ -100,7 +102,7 @@ def test_reserved_primary_link_name():
             SRC,
             primary=Stream(KEY, group_by=COLS, weights=W),
             links={"primary": Stream(KEY, group_by=COLS, weights=W, match_on=("cell_line",))},
-            read=READ,
+            sampler=SAMPLER,
         )
 
 
@@ -110,7 +112,7 @@ def test_match_on_must_be_shared():
             SRC,
             primary=Stream(KEY, group_by=("cell_line", "drug"), weights=W),
             links={"c": Stream(KEY, group_by=("drug",), match_on=("cell_line",), weights=uniform([("d1",), ("d2",)]))},
-            read=READ,
+            sampler=SAMPLER,
         )
 
 
@@ -118,13 +120,8 @@ def test_in_memory_requires_chunk_one():
     with pytest.raises(ValueError, match="chunk_size=1"):
         Loader(
             SRC,
-            primary=Stream(
-                KEY,
-                group_by=COLS,
-                weights=W,
-                in_memory=True,
-                read=ReadConfig(batch_size=8, chunk_size=2, preload_nchunks=8),
-            ),
+            primary=Stream(KEY, group_by=COLS, weights=W, in_memory=True),
+            sampler={"batch_size": 8, "chunk_size": 2, "preload_nchunks": 8},
             seed=0,
         )
 
@@ -135,7 +132,7 @@ def test_every_stream_reports_its_leaf():
         SRC,
         primary=Stream(KEY, group_by=COLS, weights=W),
         links={"c": Stream(KEY, group_by=COLS, weights=W, match_on=("cell_line",))},
-        read=READ,
+        sampler=SAMPLER,
         seed=0,
     )
     leaves = next(iter(ld))["leaves"]

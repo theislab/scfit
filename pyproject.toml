@@ -154,6 +154,8 @@ lint.pydocstyle.convention = "numpy"
 
 [tool.pyright]
 pythonVersion = "3.12"
+# Resolved params always hold every key, so reading one is safe.
+reportTypedDictNotRequiredAccess = false
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]

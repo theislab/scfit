@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from functools import cache
 from typing import Any, cast, get_type_hints
 
-from scfit.registry import Component, component
+from scfit.registry import Component, component, required_keys
 
 __all__ = ["Default", "ParamsComponent", "defaults_of", "resolve_params", "validates"]
 
@@ -25,9 +25,15 @@ class Default:
 
 
 def defaults_of[T: Mapping[str, Any]](spec: type[T]) -> T:
-    """The :class:`Default` of every key of ``spec``; raises if a key has none."""
+    """The :class:`Default` of every optional key of ``spec``; raises if one has none.
+
+    A ``Required[...]`` key has no default: :func:`resolve_params` demands it instead.
+    """
     defaults = {}
+    required = required_keys(spec)
     for key, hint in get_type_hints(spec, include_extras=True).items():
+        if key in required:
+            continue
         marker = next((m for m in getattr(hint, "__metadata__", ()) if isinstance(m, Default)), None)
         if marker is None:
             raise TypeError(f"`{spec.__name__}.{key}` is missing a `Default(...)` in its annotation.")
@@ -57,9 +63,14 @@ def resolve_params[T: Mapping[str, Any]](params: Mapping[str, Any] | None, spec:
     defaults = _cached_defaults(spec)
     if params is not None and not isinstance(params, Mapping):
         raise TypeError(f"params must be a mapping or None; got {type(params).__name__}.")
-    unknown = set(params or ()) - set(defaults)
+    required = required_keys(spec)
+    unknown = set(params or ()) - set(defaults) - required
     if unknown:
-        raise ValueError(f"Unknown {spec.__name__} key(s): {sorted(unknown)}; expected from {sorted(defaults)}.")
+        known = sorted({*defaults, *required})
+        raise ValueError(f"Unknown {spec.__name__} key(s): {sorted(unknown)}; expected from {known}.")
+    missing = required - set(params or ())
+    if missing:
+        raise ValueError(f"Missing required {spec.__name__} key(s): {sorted(missing)}.")
     merged = {**defaults, **(params or {})}
     if (validate := _VALIDATORS.get(spec)) is not None:
         validate(merged)

@@ -15,7 +15,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 
-from scfit.data import Loader, ReadConfig, Stream
+from scfit.data import Loader, Stream
 from scfit.data._io import obs_columns
 
 LINES = ("A", "B")
@@ -173,7 +173,7 @@ def perturbation_loader(
         primary=primary,
         links=links,
         seed=seed,
-        read=ReadConfig(batch_size=batch_size, chunk_size=chunk_size, preload_nchunks=preload_nchunks),
+        sampler={"batch_size": batch_size, "chunk_size": chunk_size, "preload_nchunks": preload_nchunks},
         to=to,
         preload_to_gpu=preload_to_gpu,
     )

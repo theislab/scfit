@@ -14,10 +14,10 @@ from itertools import islice
 import pytest
 from scheme_helpers import KEY, assert_shares, encoded_adata, leaf_shares, only_leaf, rep, uniform
 
-from scfit.data import Loader, ReadConfig, Stream
+from scfit.data import Loader, Stream
 
 COLS = ("cell_line", "drug")
-READ = {"read": ReadConfig(batch_size=8, chunk_size=1, preload_nchunks=8)}
+READ = {"sampler": {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}}
 
 
 @pytest.mark.parametrize(

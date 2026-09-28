@@ -7,6 +7,6 @@ output by stream name and expose no row indices.
 
 from scfit.data._eval import EvalLoader
 from scfit.data._loader import Loader
-from scfit.data._schema import ReadConfig, Stream
+from scfit.data._schema import SamplerParams, Stream
 
-__all__ = ["EvalLoader", "Loader", "ReadConfig", "Stream"]
+__all__ = ["EvalLoader", "Loader", "SamplerParams", "Stream"]

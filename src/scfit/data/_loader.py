@@ -20,12 +20,13 @@ from scfit.data._annbatch_shim import BoundClassSampler, ClassSampler
 from scfit.data._io import is_backed_array, open_source
 from scfit.data._schema import (
     _PRIMARY,
-    ReadConfig,
+    SamplerParams,
     Stream,
     validate_links,
     weight_vector,
 )
 from scfit.data._source import Source, build_sources, resolve_source
+from scfit.params import resolve_params
 
 __all__ = ["Loader"]
 
@@ -52,7 +53,8 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
-        read: ReadConfig | None = None,
+        sampler: SamplerParams,
+        stream_samplers: Mapping[str, SamplerParams] | None = None,
     ) -> None:
         links = dict(links or {})
         validate_links(primary, links)
@@ -67,8 +69,14 @@ class Loader:
                 if k not in self._sources:
                     raise ValueError(f"stream {name!r}: source_key {k!r} not in sources {sorted(self._sources)}.")
 
-        # Resolve the read config per stream: the stream's own wins; else the loader's; else error.
-        self._cfg: dict[str, ReadConfig] = {}
+        # Every stream reads with `sampler` unless `stream_samplers` names it.
+        stream_samplers = dict(stream_samplers or {})
+        unknown = set(stream_samplers) - set(self._streams)
+        if unknown:
+            raise ValueError(
+                f"stream_samplers name unknown stream(s) {sorted(unknown)}; streams are {sorted(self._streams)}."
+            )
+        self._cfg: dict[str, SamplerParams] = {}
         for name, s in self._streams.items():
             if not s.reps:
                 # ponytail: no metadata-only training stream — the per-rep annbatch loaders ARE what advances
@@ -78,16 +86,14 @@ class Loader:
                     f"stream {name!r} has no reps: metadata-only streams are EvalLoader-only (the training "
                     "Loader streams cells). Give it a rep, or iterate it with EvalLoader."
                 )
-            eff = s.read or read
-            if eff is None:
-                raise ValueError(f"stream {name!r}: no ReadConfig on the Stream or the Loader.")
-            if s.in_memory and eff.chunk_size != 1:
+            eff = resolve_params(stream_samplers.get(name, sampler), SamplerParams)
+            if s.in_memory and eff["chunk_size"] != 1:
                 raise ValueError(
-                    f"stream {name!r} is in_memory but chunk_size={eff.chunk_size}: an in-memory stream is read "
+                    f"stream {name!r} is in_memory but chunk_size={eff['chunk_size']}: an in-memory stream is read "
                     "from RAM in one shot and must use chunk_size=1 (set it explicitly)."
                 )
             self._cfg[name] = eff
-        self._root_batch_size = self._cfg[_PRIMARY].batch_size
+        self._root_batch_size = self._cfg[_PRIMARY]["batch_size"]
 
         # One RNG per stream, spawned off default_rng(seed). Samplers deepcopy (never advance) these, so a
         # stream's oracle/target/link samplers start identical, stay in lockstep, and are seed-reproducible.
@@ -125,8 +131,10 @@ class Loader:
         for name in self._links:
             # match_on set → bound to the primary's per-batch class; match_on=() → an independent
             # (unconditional) draw from the link's own weights.
-            sampler = self._new_bound_sampler(name) if self._streams[name].match_on else self._new_class_sampler(name)
-            self._loaders[name] = self._build_per_rep_loaders(name, sampler)
+            link_sampler = (
+                self._new_bound_sampler(name) if self._streams[name].match_on else self._new_class_sampler(name)
+            )
+            self._loaders[name] = self._build_per_rep_loaders(name, link_sampler)
 
         self._iters: dict[str, dict[str, Iterator[dict]]] | None = None
         self._pos = 0  # position within the current epoch (drives the epoch roll)
@@ -155,7 +163,8 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
-        read: ReadConfig | None = None,
+        sampler: SamplerParams,
+        stream_samplers: Mapping[str, SamplerParams] | None = None,
     ) -> Loader:
         """Build a :class:`Loader` from zarr ``{source_key: path | [paths]}``, opened backed.
 
@@ -181,18 +190,19 @@ class Loader:
             seed=seed,
             to=to,
             preload_to_gpu=preload_to_gpu,
-            read=read,
+            sampler=sampler,
+            stream_samplers=stream_samplers,
         )
 
     def _new_class_sampler(self, name: str) -> ClassSampler:
         cfg = self._cfg[name]
         try:  # annbatch enforces its own run-length rule for chunk>1; forward with stream context
             return ClassSampler(
-                chunk_size=cfg.chunk_size,
-                preload_nchunks=cfg.preload_nchunks,
-                batch_size=cfg.batch_size,
+                chunk_size=cfg["chunk_size"],
+                preload_nchunks=cfg["preload_nchunks"],
+                batch_size=cfg["batch_size"],
                 classes=self._st[name]["cats"],
-                num_samples=self._pass_len * cfg.batch_size,
+                num_samples=self._pass_len * cfg["batch_size"],
                 class_weights=self._st[name]["w"],
                 drop_last=True,
                 rng=deepcopy(self._rngs[name]),
@@ -208,9 +218,9 @@ class Loader:
         try:
             return BoundClassSampler(
                 deepcopy(self._oracle_sampler),
-                cfg.chunk_size,
-                cfg.preload_nchunks,
-                cfg.batch_size,
+                cfg["chunk_size"],
+                cfg["preload_nchunks"],
+                cfg["batch_size"],
                 classes_to_bind_on=cats,
                 # primary tuple position → link tuple position, per shared ``match_on`` column
                 on={primary.group_by.index(c): link.group_by.index(c) for c in link.match_on},
