@@ -7,12 +7,12 @@ suite honest about the public :mod:`scfit.registry` surface.
 from __future__ import annotations
 
 import dataclasses
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, Unpack
 
 import pytest
 
 from scfit.params import Default, ParamsComponent
-from scfit.registry import Component, PortabilityError, component, parse, to_spec
+from scfit.registry import Component, PortabilityError, component, config_of, parse, to_spec
 
 
 @component("test.widget")
@@ -179,3 +179,44 @@ def test_only_exact_json_and_components_are_portable(value):
 
 def test_tuples_are_written_as_lists():
     assert to_spec(_Holder(obj=(1, "a")))["config"]["obj"] == [1, "a"]
+
+
+class _Impl:
+    def __init__(self, **params: Unpack[_WidgetParams]) -> None:
+        self.params = params
+
+
+@component("test.linked", builds=_Impl)
+class _Linked(ParamsComponent):
+    params: _WidgetParams = dataclasses.field(default_factory=lambda: _WidgetParams())
+
+
+class _OtherParams(TypedDict, total=False):
+    width: Annotated[int, Default(3)]
+
+
+class _OtherImpl:
+    def __init__(self, **params: Unpack[_OtherParams]) -> None: ...
+
+
+@component("test.mislinked", builds=_OtherImpl)
+class _Mislinked(ParamsComponent):
+    params: _WidgetParams = dataclasses.field(default_factory=lambda: _WidgetParams())
+
+
+def test_config_is_found_from_its_implementation():
+    assert config_of(_Impl) is _Linked
+    assert _Linked.__builds__ is _Impl
+
+
+def test_params_must_match_what_the_implementation_unpacks():
+    with pytest.raises(TypeError, match="unpacks _OtherParams"):
+        _Mislinked()
+
+
+def test_one_config_per_implementation():
+    with pytest.raises(ValueError, match="already built by"):
+
+        @component("test.second", builds=_Impl)
+        class _Second(ParamsComponent):
+            params: _WidgetParams = dataclasses.field(default_factory=lambda: _WidgetParams())

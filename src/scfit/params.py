@@ -98,5 +98,17 @@ class ParamsComponent(Component):
     params: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        spec = cast("type[Mapping[str, Any]]", _field_types(type(self))["params"])
+        spec = _linked_spec(type(self))
         object.__setattr__(self, "params", resolve_params(self.params, spec))
+
+
+@cache
+def _linked_spec(cls: type[ParamsComponent]) -> type[Mapping[str, Any]]:
+    """The config's params TypedDict, checked once against the one its ``builds`` class unpacks."""
+    spec = cast("type[Mapping[str, Any]]", _field_types(cls)["params"])
+    if cls.__builds__ is not None and _init_spec(cls.__builds__) is not spec:
+        raise TypeError(
+            f"{cls.__name__} holds {spec.__name__}, but {cls.__builds__.__name__}.__init__ unpacks "
+            f"{_init_spec(cls.__builds__).__name__}."
+        )
+    return spec

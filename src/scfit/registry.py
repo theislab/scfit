@@ -29,9 +29,10 @@ from typing import (
 # ListConfig/DictConfig leaf values natively. See the design decision for the full rationale.
 import cattrs
 
-__all__ = ["Component", "PortabilityError", "component", "to_spec", "parse"]
+__all__ = ["Component", "PortabilityError", "component", "config_of", "to_spec", "parse"]
 
 _REGISTRY: dict[str, type[Component]] = {}
+_CONFIGS: dict[type, type[Component]] = {}  # implementation -> the config that builds it
 _converter = cattrs.Converter(forbid_extra_keys=True)  # loud on a typo'd LEAF field
 _hints_cache: dict[type, dict[str, object]] = {}
 
@@ -55,6 +56,7 @@ class Component:
     __type_id__: ClassVar[str]
     __version__: ClassVar[int]  # written
     __versions__: ClassVar[frozenset[int]]  # accepted when read
+    __builds__: ClassVar[type | None] = None  # the implementation `build` returns, set by `component(builds=)`
 
     def to_spec(self) -> dict[str, Any]:
         """Return this config as a portable ``{type, version, config}`` dict; raises on live instances."""
@@ -72,12 +74,19 @@ class Component:
 
 @dataclass_transform(frozen_default=True, kw_only_default=True)
 def component[C: Component](
-    type_id: str | None = None, *, version: int = 1, versions: tuple[int, ...] | None = None
+    type_id: str | None = None,
+    *,
+    builds: type | None = None,
+    version: int = 1,
+    versions: tuple[int, ...] | None = None,
 ) -> Callable[[type[C]], type[C]]:
     """Make a `Component` subclass a frozen, keyword-only dataclass and register it under ``type_id``.
 
     Without ``type_id`` the class is a family base with fields, left unregistered. Field annotations are
     resolved on first use, so a field may name its own class or one defined later in the module.
+
+    ``builds`` names the implementation the config's ``build`` returns, so :func:`config_of` finds the config
+    for a class. One config per implementation.
 
     Specs are written at ``version``. ``versions`` lists every version one may be read at, e.g. ``(1, 2)``
     after adding a field with a default, so v1 specs still load.
@@ -99,9 +108,23 @@ def component[C: Component](
             raise ValueError(f"type_id {type_id!r} already registered to {existing.__name__}.")
         cls.__type_id__, cls.__version__, cls.__versions__ = type_id, version, accepted
         _REGISTRY[type_id] = cls
+        if builds is not None:
+            linked = _CONFIGS.get(builds)
+            if linked is not None and linked is not cls:
+                raise ValueError(f"{builds.__name__} is already built by {linked.__name__}.")
+            cls.__builds__ = builds
+            _CONFIGS[builds] = cls
         return cls
 
     return register
+
+
+def config_of(implementation: type) -> type[Component]:
+    """The config registered with ``builds=implementation``."""
+    try:
+        return _CONFIGS[implementation]
+    except KeyError:
+        raise KeyError(f"no config builds {implementation.__name__}; register one with builds=.") from None
 
 
 def _field_types(cls: type) -> dict[str, object]:
