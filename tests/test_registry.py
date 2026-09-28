@@ -12,7 +12,7 @@ from typing import Annotated, TypedDict
 import pytest
 
 from scfit.params import Default, ParamsComponent
-from scfit.registry import Component, PortabilityError, component, parse, register_live, to_spec
+from scfit.registry import Component, PortabilityError, component, parse, to_spec
 
 
 @component("test.widget")
@@ -41,20 +41,19 @@ def test_unknown_type_rejected():
         parse({"type": "test.nonexistent", "version": 1, "config": {}})
 
 
-def test_live_instance_has_no_portable_spec():
-    @register_live
-    class _Live:
-        pass
+@component("test.holder")
+class _Holder(Component):
+    obj: object = None
 
-    @component("test.holder")
-    class _Holder(Component):
-        obj: object = None
 
-        def build(self):
-            return self.obj
+@pytest.mark.parametrize("live", [object(), len, {("a",): 1}], ids=["instance", "callable", "tuple_key"])
+def test_anything_but_components_and_json_has_no_spec(live):
+    with pytest.raises(PortabilityError, match="portable"):
+        to_spec(_Holder(obj=live))
 
-    with pytest.raises(PortabilityError):
-        to_spec(_Holder(obj=_Live()))
+
+def test_json_data_is_portable():
+    assert to_spec(_Holder(obj={"a": [1, 2.5, None, "x", True]}))["config"]["obj"] == {"a": [1, 2.5, None, "x", True]}
 
 
 class _Enc(Component):

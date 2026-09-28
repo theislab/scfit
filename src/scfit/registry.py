@@ -28,7 +28,7 @@ from typing import (
 # ListConfig/DictConfig leaf values natively. See the design decision for the full rationale.
 import cattrs
 
-__all__ = ["Component", "PortabilityError", "component", "to_spec", "parse", "register_live"]
+__all__ = ["Component", "PortabilityError", "component", "to_spec", "parse"]
 
 _REGISTRY: dict[str, type[Component]] = {}
 _converter = cattrs.Converter(forbid_extra_keys=True)  # loud on a typo'd LEAF field
@@ -36,7 +36,7 @@ _hints_cache: dict[type, dict[str, object]] = {}
 
 
 class PortabilityError(Exception):
-    """Raised when a config holding a live runtime instance is asked for its portable spec."""
+    """Raised when a config holds something other than components and JSON data, e.g. a live object."""
 
 
 class Component:
@@ -104,23 +104,6 @@ def component[C: Component](
     return register
 
 
-def register_live(cls: type) -> type:
-    """Mark a live runtime type as non-portable: exporting a config that holds one raises loudly.
-
-    The escape hatch — a config field typed ``Family | LiveFamily`` trains/builds with a live instance, but
-    :func:`to_spec` on that config raises :class:`PortabilityError` instead of silently dropping it.
-    """
-
-    def _raise(_obj: object) -> object:
-        raise PortabilityError(
-            f"{cls.__name__} is a runtime-only instance and has no portable config; pass a Component spec "
-            f"instead of a live object to make this config serializable."
-        )
-
-    _converter.register_unstructure_hook(cls, _raise)
-    return cls
-
-
 def _field_types(cls: type) -> dict[str, object]:
     if cls not in _hints_cache:
         _hints_cache[cls] = get_type_hints(cls)
@@ -135,14 +118,30 @@ def _has_component(tp: object) -> bool:
     return _is_component(tp) or any(_has_component(a) for a in get_args(tp))
 
 
+def _is_json(value: object) -> bool:
+    if value is None or isinstance(value, bool | int | float | str):
+        return True
+    if isinstance(value, list):
+        return all(_is_json(v) for v in value)
+    return isinstance(value, dict) and all(isinstance(k, str) and _is_json(v) for k, v in value.items())
+
+
 def _unstructure_field(value: object) -> object:
     if isinstance(value, Component):
         return to_spec(value)  # nested sub-component -> nested envelope
     if isinstance(value, Mapping):
-        return {_converter.unstructure(k): _unstructure_field(v) for k, v in value.items()}
+        if not all(isinstance(k, str) for k in value):
+            raise PortabilityError(f"dict keys must be strings to be portable; got {sorted(map(repr, value))}.")
+        return {k: _unstructure_field(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_unstructure_field(v) for v in value]
-    return _converter.unstructure(value)  # leaves + live-instance guard (raises)
+    leaf = _converter.unstructure(value)
+    if not _is_json(leaf):  # portable means components and JSON data; anything else is a live object
+        raise PortabilityError(
+            f"{type(value).__name__} has no portable form: a spec holds only components and JSON data. "
+            "Pass a component instead of a live object to make this config serializable."
+        )
+    return leaf
 
 
 def to_spec(config: Component) -> dict[str, Any]:

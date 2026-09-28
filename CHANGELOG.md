@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning][].
 
 ### Removed
 
+- `registry.register_live`: a spec now holds only components and JSON data, and anything else raises `PortabilityError`
 - `registry.build`, `Component.build` and `Component.build_spec`: each family declares its own typed `build`
 - The `type_id=` / `version=` / `versions=` class keywords: use `@component(type_id, version=..., versions=...)`
 - `data.SamplerKwargs`, the `batch_size` / `chunk_size` / `preload_nchunks` keywords, and sampler settings on `Stream`: pass `sampler=` / `stream_samplers=` to the loader
