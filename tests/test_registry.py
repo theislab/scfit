@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 
+import numpy as np
 import pytest
 
 from scfit.registry import Component, PortabilityError, RngComponent, parse, register_live, to_spec
@@ -17,7 +18,7 @@ from scfit.registry import Component, PortabilityError, RngComponent, parse, reg
 class _Widget(Component, type_id="test.widget", version=1):
     width: int = 3
 
-    def build(self, context=None):
+    def build(self):
         return self.width * 2
 
 
@@ -48,7 +49,7 @@ def test_live_instance_has_no_portable_spec():
     class _Holder(Component, type_id="test.holder", version=1):
         obj: object = None
 
-        def build(self, context=None):
+        def build(self):
             return self.obj
 
     with pytest.raises(PortabilityError):
@@ -90,13 +91,11 @@ def test_components_in_containers_keep_their_type():
 
 
 def test_rng_component_builds_from_the_given_rng():
-    np = pytest.importorskip("numpy")
-
     @dataclasses.dataclass
     class _Draw(RngComponent, type_id="test.draw", version=1):
         n: int = 3
 
-        def build(self, context=None, *, rng):
+        def build(self, *, rng):
             return rng.random(self.n)
 
     config = parse(_Draw().to_spec())
