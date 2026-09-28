@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 from scheme_helpers import KEY, encoded_adata, only_leaf, rep, uniform
 
-from scfit.data import Loader, Stream
+from scfit.data import Loader, ReadConfig, Stream
 
 COLS = ("cell_line", "drug")
 
@@ -26,9 +26,7 @@ def _primary_only(adata, weights, *, batch_size=8, chunk_size=1, preload_nchunks
         {KEY: adata},
         primary=Stream(KEY, group_by=COLS, weights=weights),
         seed=0,
-        batch_size=batch_size,
-        chunk_size=chunk_size,
-        preload_nchunks=preload_nchunks,
+        read=ReadConfig(batch_size=batch_size, chunk_size=chunk_size, preload_nchunks=preload_nchunks),
     )
     return loader if n_iters is None else loader.set_n_iters(n_iters)
 

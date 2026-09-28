@@ -14,11 +14,13 @@ and this project adheres to [Semantic Versioning][].
 
 - Basic tool, preprocessing and plotting functions
 - `registry.component`: the one way to register a config; makes it a frozen, keyword-only dataclass
+- `data.ReadConfig`: the read parameters as a portable component, passed as `read=` to `Stream`, `Loader` and `Loader.from_paths`
 
 ### Removed
 
 - `registry.build`, `Component.build` and `Component.build_spec`: each family declares its own typed `build`
 - The `type_id=` / `version=` / `versions=` class keywords: use `@component(type_id, version=..., versions=...)`
+- `data.SamplerKwargs` and the `batch_size` / `chunk_size` / `preload_nchunks` keywords: use `read=ReadConfig(...)`
 
 ### Fixed
 

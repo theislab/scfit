@@ -6,10 +6,11 @@ model and the cellflow / sc-flow-tools mapping.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TypedDict, Unpack
 
 import anndata as ad
 import numpy as np
+
+from scfit.registry import Component, component
 
 type Container = ad.AnnData | list[ad.AnnData]
 
@@ -17,49 +18,47 @@ type Container = ad.AnnData | list[ad.AnnData]
 # excluded — that IS the selection, native to annbatch's ClassSampler. ``None`` means uniform over every group.
 Weights = Mapping[tuple, float]
 
-__all__ = ["Container", "SamplerKwargs", "Stream", "Weights", "weight_vector"]
-
-# The annbatch read parameters, defined once (via ``Unpack[SamplerKwargs]``) for both Stream and Loader.
-_SAMPLER_KEYS = ("batch_size", "chunk_size", "preload_nchunks")
+__all__ = ["Container", "ReadConfig", "Stream", "Weights", "weight_vector"]
 
 # Reserved name of the root / target (primary) stream — shared by Loader and EvalLoader.
 _PRIMARY = "primary"
 
 
-class SamplerKwargs(TypedDict, total=False):
-    """The annbatch read parameters, shared by :class:`Stream` and :class:`~scfit.data.Loader`.
-
-    ``total=False`` so a caller may pass none (inherit from the other level) or all three; a *partial*
-    set is rejected at runtime by :func:`_check_sampler` (all-or-nothing).
+@component("scfit.read")
+class ReadConfig(Component):
+    """The annbatch read parameters of a stream, set on a :class:`Stream` or as a :class:`~scfit.data.Loader` default.
 
     Parameters
     ----------
     batch_size
         Rows per emitted batch for this stream (source and target row counts need not match).
     chunk_size
-        annbatch read-slice size. ``1`` ⇒ per-row reads (any layout); ``>1`` ⇒ contiguous chunked reads
-        (each sampled leaf must sit in a contiguous run ≥ ``chunk_size``). Must divide ``batch_size``.
+        annbatch read-slice size. ``1`` reads per row (any layout); ``>1`` reads contiguous chunks (each
+        sampled leaf must sit in a contiguous run of at least ``chunk_size``). Must divide ``batch_size``.
     preload_nchunks
-        Chunks per annbatch read window; a positive multiple of ``batch_size // chunk_size``.
+        Chunks per annbatch read window, a positive multiple of ``batch_size // chunk_size``. ``None`` is
+        exactly that.
     """
 
     batch_size: int
-    chunk_size: int
-    preload_nchunks: int
+    chunk_size: int = 1
+    preload_nchunks: int | None = None
 
+    def __post_init__(self) -> None:
+        if self.batch_size <= 0 or self.chunk_size <= 0 or self.batch_size % self.chunk_size:
+            raise ValueError(f"chunk_size={self.chunk_size} must be positive and divide batch_size={self.batch_size}.")
+        if self.preload_nchunks is not None and (
+            self.preload_nchunks <= 0 or self.preload_nchunks % (self.batch_size // self.chunk_size)
+        ):
+            raise ValueError(
+                f"preload_nchunks={self.preload_nchunks} must be a positive multiple of "
+                f"batch_size // chunk_size = {self.batch_size // self.chunk_size}."
+            )
 
-def _check_sampler(sampler: Mapping[str, int], where: str) -> None:
-    """Validate collected sampler kwargs: known keys only, and all-or-nothing (partial → error)."""
-    extra = [k for k in sampler if k not in _SAMPLER_KEYS]
-    if extra:
-        raise TypeError(f"{where}: unexpected keyword(s) {extra}; sampler kwargs are {list(_SAMPLER_KEYS)}.")
-    given = [k for k in _SAMPLER_KEYS if k in sampler]
-    if given and len(given) != len(_SAMPLER_KEYS):
-        missing = [k for k in _SAMPLER_KEYS if k not in sampler]
-        raise ValueError(
-            f"{where}: sampler kwargs are all-or-nothing — got {given} but missing {missing} "
-            f"(set all of {list(_SAMPLER_KEYS)}, or none to inherit)."
-        )
+    @property
+    def window(self) -> int:
+        """Chunks per read window, with the ``None`` default resolved."""
+        return self.preload_nchunks or self.batch_size // self.chunk_size
 
 
 def weight_vector(weights: Weights | None, leaves: Sequence[tuple]) -> np.ndarray:
@@ -111,10 +110,8 @@ class Stream:
     in_memory
         Materialize this stream's selected (positive-weight) cells into RAM once, instead of re-reading the
         source each batch (for a small, frequently re-drawn pool such as a matched control).
-    **sampler_kwargs
-        The read parameters :class:`SamplerKwargs` — ``batch_size`` / ``chunk_size`` / ``preload_nchunks``.
-        All-or-nothing: pass all three to set them on this stream, or none to inherit the
-        :class:`~scfit.data.Loader`'s.
+    read
+        This stream's :class:`ReadConfig`. ``None`` inherits the :class:`~scfit.data.Loader`'s.
     """
 
     def __init__(
@@ -126,9 +123,8 @@ class Stream:
         weights: Weights | None = None,
         match_on: Sequence[str] = (),
         in_memory: bool = False,
-        **sampler_kwargs: Unpack[SamplerKwargs],
+        read: ReadConfig | None = None,
     ) -> None:
-        _check_sampler(sampler_kwargs, "Stream")
         keys = (source_key,) if isinstance(source_key, str) else tuple(source_key)
         if not keys or not all(isinstance(k, str) and k for k in keys):
             raise ValueError("Stream.source_key must be a non-empty string, or a non-empty sequence of them.")
@@ -159,7 +155,7 @@ class Stream:
         self.weights = weights
         self.match_on = tuple(match_on)
         self.in_memory = in_memory
-        self.sampler_kwargs: dict[str, int] = dict(sampler_kwargs)  # {} (inherit) or all three (see _check_sampler)
+        self.read = read
 
 
 def validate_links(primary: Stream, links: Mapping[str, Stream]) -> None:
