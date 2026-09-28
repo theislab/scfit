@@ -14,10 +14,12 @@ and this project adheres to [Semantic Versioning][].
 
 - Basic tool, preprocessing and plotting functions
 - `registry.RngComponent`, a family marker for configs whose `build` takes a caller-supplied `rng`
+- `registry.component`: the one way to register a config; makes it a frozen, keyword-only dataclass
 
 ### Removed
 
 - `registry.build`, `Component.build` and `Component.build_spec`: each family declares its own typed `build`
+- The `type_id=` / `version=` / `versions=` class keywords: use `@component(type_id, version=...)`
 
 ### Fixed
 

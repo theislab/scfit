@@ -27,8 +27,8 @@ repos:
     rev: v1.1.414
     hooks:
       - id: pyright
-        files: ^src/scfit/registry\.py$
-        additional_dependencies: [cattrs]
+        files: ^(src/scfit/registry|tests/test_registry)\.py$
+        additional_dependencies: [cattrs, numpy, pytest]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

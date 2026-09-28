@@ -11,11 +11,11 @@ import dataclasses
 import numpy as np
 import pytest
 
-from scfit.registry import Component, PortabilityError, RngComponent, parse, register_live, to_spec
+from scfit.registry import Component, PortabilityError, RngComponent, component, parse, register_live, to_spec
 
 
-@dataclasses.dataclass
-class _Widget(Component, type_id="test.widget", version=1):
+@component("test.widget")
+class _Widget(Component):
     width: int = 3
 
     def build(self):
@@ -45,8 +45,8 @@ def test_live_instance_has_no_portable_spec():
     class _Live:
         pass
 
-    @dataclasses.dataclass
-    class _Holder(Component, type_id="test.holder", version=1):
+    @component("test.holder")
+    class _Holder(Component):
         obj: object = None
 
         def build(self):
@@ -60,18 +60,18 @@ class _Enc(Component):
     pass
 
 
-@dataclasses.dataclass
-class _OneHot(_Enc, type_id="test.one_hot", version=1):
+@component("test.one_hot")
+class _OneHot(_Enc):
     categories: list[str] | None = None
 
 
-@dataclasses.dataclass
-class _Label(_Enc, type_id="test.label", version=1):
+@component("test.label")
+class _Label(_Enc):
     categories: list[str] | None = None
 
 
-@dataclasses.dataclass
-class _Encoders(Component, type_id="test.encoders", version=1):
+@component("test.encoders")
+class _Encoders(Component):
     by_key: dict[str, _Enc] | None = None
     ordered: list[_Enc] = dataclasses.field(default_factory=list)
     pair: tuple[_Enc, _Enc] | None = None
@@ -80,7 +80,7 @@ class _Encoders(Component, type_id="test.encoders", version=1):
 
 def test_components_in_containers_keep_their_type():
     config = _Encoders(
-        by_key={"a": _OneHot(), "b": _Label(["x"])},
+        by_key={"a": _OneHot(), "b": _Label(categories=["x"])},
         ordered=[_Label(), _OneHot()],
         pair=(_OneHot(), _Label()),
         many=(_Label(),),
@@ -91,15 +91,28 @@ def test_components_in_containers_keep_their_type():
 
 
 def test_rng_component_builds_from_the_given_rng():
-    @dataclasses.dataclass
-    class _Draw(RngComponent, type_id="test.draw", version=1):
+    @component("test.draw")
+    class _Draw(RngComponent):
         n: int = 3
 
         def build(self, *, rng):
             return rng.random(self.n)
 
-    config = parse(_Draw().to_spec())
+    config = _Draw.from_spec(_Draw().to_spec())
     assert isinstance(config, RngComponent)
     np.testing.assert_array_equal(config.build(rng=np.random.default_rng(0)), np.random.default_rng(0).random(3))
     with pytest.raises(TypeError):
-        config.build()
+        config.build()  # pyright: ignore[reportCallIssue]  (the missing rng is the point)
+
+
+def test_unregistered_subclass_has_no_spec():
+    class _Unregistered(_Widget):
+        pass
+
+    with pytest.raises(TypeError, match="not registered"):
+        _Unregistered().to_spec()
+
+
+def test_components_are_frozen():
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        _Widget().width = 4  # type: ignore[misc]
