@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning][].
 ### Added
 
 - Basic tool, preprocessing and plotting functions
-- `registry.component`: the one way to register a config; makes it a frozen, keyword-only dataclass. `builds=` links it to its implementation, found with `registry.config_of`; a `ParamsComponent`'s params must be what that implementation's `__init__` unpacks
+- `registry.component`: the one way to register a config; makes it a frozen, keyword-only dataclass. `builds=` (or a base binding `registry.Builds[Impl]`) links it to its implementation, found with `registry.config_of`; a `ParamsComponent`'s params must be what that implementation's `__init__` unpacks
 - `scfit.params`: parameter bags as TypedDicts with `Annotated[type, Default(value)]` keys; a key without one is required. `resolve_params`, `resolve_init_params` (resolves against the TypedDict a class's `__init__` unpacks), `validates`, and `ParamsComponent[P]`, a component whose `params` field is typed by its generic argument
 - `data.SamplerParams`: the sampler settings as a params TypedDict, passed as `sampler=` to `Loader` and `Loader.from_paths`, with per-stream overrides in `stream_samplers=`
 

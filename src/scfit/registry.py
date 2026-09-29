@@ -30,7 +30,7 @@ from typing import (
 # ListConfig/DictConfig leaf values natively. See the design decision for the full rationale.
 import cattrs
 
-__all__ = ["Component", "PortabilityError", "component", "config_of", "to_spec", "parse"]
+__all__ = ["Builds", "Component", "PortabilityError", "component", "config_of", "to_spec", "parse"]
 
 _REGISTRY: dict[str, type[Component]] = {}
 _CONFIGS: dict[type, type[Component]] = {}  # implementation -> the config that builds it
@@ -40,6 +40,16 @@ _hints_cache: dict[type, dict[str, object]] = {}
 
 class PortabilityError(Exception):
     """Raised when a config holds something other than components and JSON data, e.g. a live object."""
+
+
+class Builds[T]:
+    """Generic marker: a config whose bases bind ``Builds[X]`` builds ``X``.
+
+    A family base declares it once, e.g. ``class PathConfig[T: Path](Builds[T], Component)`` with
+    ``def build(self) -> T``; each config then names its implementation only in its generic argument,
+    ``class LinearConfig(PathConfig[LinearPath])``, which types ``build`` and gives :func:`component` its
+    ``builds``.
+    """
 
 
 class Component:
@@ -87,7 +97,7 @@ def component[C: Component](
     resolved on first use, so a field may name its own class or one defined later in the module.
 
     ``builds`` names the implementation the config's ``build`` returns, so :func:`config_of` finds the config
-    for a class. One config per implementation.
+    for a class; a base binding :class:`Builds` gives it without the keyword. One config per implementation.
 
     Specs are written at ``version``. ``versions`` lists every version one may be read at, e.g. ``(1, 2)``
     after adding a field with a default, so v1 specs still load.
@@ -109,12 +119,17 @@ def component[C: Component](
             raise ValueError(f"type_id {type_id!r} already registered to {existing.__name__}.")
         cls.__type_id__, cls.__version__, cls.__versions__ = type_id, version, accepted
         _REGISTRY[type_id] = cls
-        if builds is not None:
-            linked = _CONFIGS.get(builds)
+        bound = _type_arguments(cls).get(Builds.__type_params__[0])
+        bound = bound if isinstance(bound, type) else None
+        if builds is not None and bound is not None and builds is not bound:
+            raise TypeError(f"{cls.__name__}: builds={builds.__name__} but its bases bind Builds[{bound.__name__}].")
+        target = builds or bound
+        if target is not None:
+            linked = _CONFIGS.get(target)
             if linked is not None and linked is not cls:
-                raise ValueError(f"{builds.__name__} is already built by {linked.__name__}.")
-            cls.__builds__ = builds
-            _CONFIGS[builds] = cls
+                raise ValueError(f"{target.__name__} is already built by {linked.__name__}.")
+            cls.__builds__ = target
+            _CONFIGS[target] = cls
         return cls
 
     return register

@@ -13,7 +13,7 @@ from typing import Annotated, Any, TypedDict, Unpack
 import pytest
 
 from scfit.params import Default, ParamsComponent
-from scfit.registry import Component, PortabilityError, component, config_of, parse, to_spec
+from scfit.registry import Builds, Component, PortabilityError, component, config_of, parse, to_spec
 
 
 @component("test.widget")
@@ -236,3 +236,31 @@ class _Deep(_Intermediate[_WidgetParams]):
 def test_params_type_resolves_through_generic_bases():
     assert _Deep().params["width"] == 3
     assert _Deep.from_spec(_Deep(params={"width": 5}).to_spec()) == _Deep(params={"width": 5})
+
+
+class _Thing:
+    pass
+
+
+class _ThingFamily[T](Builds[T], Component):
+    def build(self) -> T:
+        raise NotImplementedError
+
+
+@component("test.thing")
+class _ThingConfig(_ThingFamily[_Thing]):
+    def build(self) -> _Thing:
+        return _Thing()
+
+
+def test_generic_argument_gives_builds():
+    assert _ThingConfig.__builds__ is _Thing
+    assert config_of(_Thing) is _ThingConfig
+
+
+def test_builds_must_agree_with_the_generic_argument():
+    with pytest.raises(TypeError, match=r"bind Builds\[_Thing\]"):
+
+        @component("test.disagree", builds=_Impl)
+        class _Disagree(_ThingFamily[_Thing]):
+            pass
