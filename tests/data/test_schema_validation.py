@@ -1,8 +1,8 @@
-"""Structural validation of the ``Stream`` spec + the ``Loader``'s sampler-kwargs resolution.
+"""Structural validation of the ``Stream`` spec + the ``Loader``'s sampler resolution.
 
 The Stream cases are data-free ``__init__`` guards. The Loader cases build a tiny in-memory loader to
-exercise the resolution rules (a stream's own sampler kwargs win; else the loader's; else error) and the
-cross-stream guards (reserved name, match_on ⊆ shared, in_memory ⇒ chunk_size=1) and the per-batch leaves.
+exercise ``stream_samplers`` overriding ``sampler``, the cross-stream guards (reserved name,
+match_on ⊆ shared, in_memory ⇒ chunk_size=1) and the per-batch leaves.
 """
 
 from __future__ import annotations

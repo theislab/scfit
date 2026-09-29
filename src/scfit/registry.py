@@ -11,6 +11,7 @@ import dataclasses
 import math
 import types
 from collections.abc import Callable, Mapping, Sequence
+from functools import cache
 from typing import (
     Any,
     ClassVar,
@@ -35,7 +36,6 @@ __all__ = ["Builds", "Component", "PortabilityError", "component", "config_of", 
 _REGISTRY: dict[str, type[Component]] = {}
 _CONFIGS: dict[type, type[Component]] = {}  # implementation -> the config that builds it
 _converter = cattrs.Converter(forbid_extra_keys=True)  # loud on a typo'd LEAF field
-_hints_cache: dict[type, dict[str, object]] = {}
 
 
 class PortabilityError(Exception):
@@ -67,7 +67,7 @@ class Component:
     __type_id__: ClassVar[str]
     __version__: ClassVar[int]  # written
     __versions__: ClassVar[frozenset[int]]  # accepted when read
-    __builds__: ClassVar[type | None] = None  # the implementation `build` returns, set by `component(builds=)`
+    __builds__: ClassVar[type | None] = None  # the implementation `build` returns, set by `component`
 
     def to_spec(self) -> dict[str, Any]:
         """Return this config as a portable ``{type, version, config}`` dict; raises on live instances."""
@@ -75,10 +75,9 @@ class Component:
 
     @classmethod
     def from_spec(cls, spec: Mapping[str, object]) -> Self:
-        """Parse a spec into a config, enforcing that it is a ``cls`` (family-scoped, typed entry).
+        """Parse a spec into a config, enforcing that it is a ``cls``.
 
-        Replaces the per-family ``validate_<family>_spec`` free functions: ``Combiner.from_spec(spec)``
-        returns a validated ``Combiner``, and rejects a spec whose type is not a ``Combiner``.
+        ``Combiner.from_spec(spec)`` returns a validated ``Combiner``, and rejects a spec whose type is not one.
         """
         return _structure_component(spec, cls)
 
@@ -147,20 +146,18 @@ def _type_arguments(cls: type) -> dict[object, object]:
     """``{type parameter: argument}`` bound anywhere in ``cls``'s bases, e.g. ``ParamsComponent[X]`` gives ``P: X``."""
     bound: dict[object, object] = {}
     for klass in cls.__mro__:  # most derived first, so an argument that is itself a parameter resolves
-        for base in getattr(klass, "__orig_bases__", ()):
+        for base in klass.__dict__.get("__orig_bases__", ()):
             parameters = getattr(get_origin(base), "__type_params__", ())
             for parameter, argument in zip(parameters, get_args(base), strict=False):
                 bound[parameter] = bound.get(argument, argument)
     return bound
 
 
+@cache
 def _field_types(cls: type) -> dict[str, object]:
     """``cls``'s field annotations, with the type arguments of generic bases filled in."""
-    if cls not in _hints_cache:
-        bound = _type_arguments(cls)
-        hints = get_type_hints(cls)
-        _hints_cache[cls] = {k: bound.get(v, v) if isinstance(v, TypeVar) else v for k, v in hints.items()}
-    return _hints_cache[cls]
+    bound = _type_arguments(cls)
+    return {k: bound.get(v, v) if isinstance(v, TypeVar) else v for k, v in get_type_hints(cls).items()}
 
 
 def _is_component(tp: object) -> TypeGuard[type[Component]]:
@@ -219,7 +216,7 @@ def _structure_field(value: object, ftype: Any) -> object:
     ``ftype`` is ``Any`` because typing cannot yet express a type form (PEP 747 ``TypeForm``).
     """
     origin, args = get_origin(ftype), get_args(ftype)
-    if origin is Union or origin is types.UnionType:  # incl. Optional and the spec|live escape hatch
+    if origin is Union or origin is types.UnionType:  # incl. Optional
         if value is None and type(None) in args:
             return None
         comps = [a for a in args if _is_component(a)]

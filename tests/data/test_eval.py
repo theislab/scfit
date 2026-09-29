@@ -23,12 +23,17 @@ def test_full_pass_is_deterministic_and_matched():
     adata = _adata()
     obs = adata.obs.reset_index(drop=True)
     primary = Stream(
-        "d", group_by=["cell_line", "drug"], reps=("X",),
+        "d",
+        group_by=["cell_line", "drug"],
+        reps=("X",),
         weights={(cl, dr): 1.0 for cl in CELL_LINES for dr in ("d1", "d2")},
     )
     control = Stream(
-        "d", group_by=["cell_line", "drug"], reps=("X",),
-        weights={(cl, "control"): 1.0 for cl in CELL_LINES}, match_on=["cell_line"],
+        "d",
+        group_by=["cell_line", "drug"],
+        reps=("X",),
+        weights={(cl, "control"): 1.0 for cl in CELL_LINES},
+        match_on=["cell_line"],
     )
     loader = EvalLoader({"d": adata}, primary=primary, links={"control": control})
 
@@ -61,12 +66,17 @@ def test_metadata_only_primary_reads_no_cells_but_still_matches():
     adata = _adata()
     obs = adata.obs.reset_index(drop=True)
     primary = Stream(
-        "d", group_by=["cell_line", "drug"], reps=(),  # metadata-only: target state unknown
+        "d",
+        group_by=["cell_line", "drug"],
+        reps=(),  # metadata-only: target state unknown
         weights={(cl, dr): 1.0 for cl in CELL_LINES for dr in ("d1", "d2")},
     )
     control = Stream(
-        "d", group_by=["cell_line", "drug"], reps=("X",),
-        weights={(cl, "control"): 1.0 for cl in CELL_LINES}, match_on=["cell_line"],
+        "d",
+        group_by=["cell_line", "drug"],
+        reps=("X",),
+        weights={(cl, "control"): 1.0 for cl in CELL_LINES},
+        match_on=["cell_line"],
     )
     loader = EvalLoader({"d": adata}, primary=primary, links={"control": control})
 
@@ -83,9 +93,7 @@ def test_metadata_only_primary_reads_no_cells_but_still_matches():
 def test_metadata_only_needs_no_rep_on_disk():
     """A metadata-only stream never touches X — so an obs-only AnnData is enough to enumerate its groups."""
     obs_only = ad.AnnData(obs=_adata().obs)
-    loader = EvalLoader(
-        {"d": obs_only}, primary=Stream("d", group_by=["cell_line", "drug"], reps=()), max_per_group=1
-    )
+    loader = EvalLoader({"d": obs_only}, primary=Stream("d", group_by=["cell_line", "drug"], reps=()), max_per_group=1)
     assert [b["primary"] for b in loader] == [{}] * len(CELL_LINES) * len(DRUGS)
 
 

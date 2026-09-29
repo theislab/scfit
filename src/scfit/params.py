@@ -25,6 +25,7 @@ class Default:
     value: Any
 
 
+@cache  # deep-copied on every merge, so a mutable default is never shared
 def _defaults_of[T: Mapping[str, Any]](spec: type[T]) -> T:
     """The :class:`Default` of every key of ``spec`` that has one. A key without one is required."""
     defaults = {}
@@ -35,7 +36,6 @@ def _defaults_of[T: Mapping[str, Any]](spec: type[T]) -> T:
     return cast("T", defaults)
 
 
-_cached_defaults = cache(_defaults_of)  # deep-copied on every merge, so a mutable default is never shared
 _VALIDATORS: dict[type, Callable[[dict[str, Any]], None]] = {}
 
 
@@ -54,7 +54,7 @@ def validates[F: Callable[[dict[str, Any]], None]](spec: type) -> Callable[[F], 
 
 def resolve_params[T: Mapping[str, Any]](params: Mapping[str, Any] | None, spec: type[T]) -> T:
     """Merge ``params`` over the defaults of ``spec`` and validate the result. Unknown keys raise."""
-    defaults = _cached_defaults(spec)
+    defaults = _defaults_of(spec)
     if params is not None and not isinstance(params, Mapping):
         raise TypeError(f"params must be a mapping or None; got {type(params).__name__}.")
     keys = set(get_type_hints(spec))

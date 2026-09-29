@@ -1,6 +1,5 @@
 """Public data spec: the :class:`Stream` that :class:`~scfit.data.Loader` and
-:class:`~scfit.data.EvalLoader` consume, plus the :class:`~scfit.data.Loader`'s :class:`SamplerParams`. See ``README.md`` for the
-model and the cellflow / sc-flow-tools mapping.
+:class:`~scfit.data.EvalLoader` consume, plus the :class:`~scfit.data.Loader`'s :class:`SamplerParams`.
 """
 
 from __future__ import annotations
