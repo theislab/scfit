@@ -156,8 +156,6 @@ lint.pydocstyle.convention = "numpy"
 
 [tool.pyright]
 pythonVersion = "3.12"
-# every optional-key TypedDict here is a params bag, and resolve_params fills every key, so reading one is safe
-reportTypedDictNotRequiredAccess = false
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]

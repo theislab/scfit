@@ -63,5 +63,5 @@ class _WithList(TypedDict, total=False):
 
 
 def test_mutable_defaults_are_not_shared():
-    resolve_params(None, _WithList)["xs"].append(1)
-    assert resolve_params(None, _WithList)["xs"] == []
+    resolve_params(None, _WithList)["xs"].append(1)  # pyright: ignore[reportTypedDictNotRequiredAccess]  (resolve_params fills every key)
+    assert resolve_params(None, _WithList)["xs"] == []  # pyright: ignore[reportTypedDictNotRequiredAccess]  (resolve_params fills every key)

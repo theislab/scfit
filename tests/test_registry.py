@@ -247,7 +247,7 @@ class _Deep(_Intermediate[_WidgetParams]):
 
 
 def test_params_type_resolves_through_generic_bases():
-    assert _Deep().params["width"] == 3
+    assert _Deep().params["width"] == 3  # pyright: ignore[reportTypedDictNotRequiredAccess]  (resolve_params fills every key)
     assert _Deep.from_spec(_Deep(params={"width": 5}).to_spec()) == _Deep(params={"width": 5})
 
 
