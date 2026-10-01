@@ -269,7 +269,9 @@ def _structure_component[C: Component](spec: object, expected: type[C]) -> C:
 # cattrs walks dicts, lists, tuples and optionals; these hooks add only what is ours. Later hooks win.
 # keys are checked before cattrs unstructures them, which would turn a tuple key into an unhashable list
 _converter.register_unstructure_hook(dict, lambda d: {k: _converter.unstructure(v) for k, v in _str_keyed(d).items()})
-_converter.register_unstructure_hook_func(lambda t: dataclasses.is_dataclass(t) or attrs.has(t), _reject_shape)
+_converter.register_unstructure_hook_func(
+    lambda t: (dataclasses.is_dataclass(t) or attrs.has(t)) and not _is_component(t), _reject_shape
+)
 _converter.register_unstructure_hook_func(_is_component, _envelope)  # by the runtime class, so subclasses keep theirs
 _converter.register_structure_hook_func(is_typeddict, _structure_params)
 _converter.register_structure_hook_func(
