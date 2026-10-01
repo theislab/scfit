@@ -8,6 +8,7 @@ foundation toolboxes and any other ecosystem plugin subclass it, so specs stay p
 from __future__ import annotations
 
 import dataclasses
+import enum
 import math
 import types
 from collections.abc import Callable, Mapping
@@ -205,6 +206,11 @@ def _reject_shape(value: object) -> object:
     raise PortabilityError(f"{type(value).__name__} has fields but is not a registered component; make it one.")
 
 
+def _reject_enum(value: enum.Enum) -> object:
+    # written as its value, it would read back as that value wherever the field is not typed as the enum
+    raise PortabilityError(f"{type(value).__name__} is an enum; use a Literal of its values instead.")
+
+
 def _structure_union(value: object, union: Any) -> object:
     """A union with components: the spec's ``type`` picks the member, so sibling components stay apart."""
     args = get_args(union)
@@ -272,6 +278,7 @@ _converter.register_unstructure_hook(dict, lambda d: {k: _converter.unstructure(
 _converter.register_unstructure_hook_func(
     lambda t: (dataclasses.is_dataclass(t) or attrs.has(t)) and not _is_component(t), _reject_shape
 )
+_converter.register_unstructure_hook_func(lambda t: isinstance(t, type) and issubclass(t, enum.Enum), _reject_enum)
 _converter.register_unstructure_hook_func(_is_component, _envelope)  # by the runtime class, so subclasses keep theirs
 _converter.register_structure_hook_func(is_typeddict, _structure_params)
 _converter.register_structure_hook_func(

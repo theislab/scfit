@@ -7,6 +7,7 @@ suite honest about the public :mod:`scfit.registry` surface.
 from __future__ import annotations
 
 import dataclasses
+import enum
 from collections.abc import Mapping
 from typing import Annotated, Any, TypedDict, Unpack
 
@@ -176,10 +177,14 @@ class _PlainAttrs:
     x: int = 1
 
 
+class _Color(enum.Enum):
+    RED = "red"
+
+
 @pytest.mark.parametrize(
     "value",
-    [_Str("a"), float("nan"), _Plain(), _PlainAttrs(), {1: "a"}],
-    ids=["str_subclass", "nan", "dataclass", "attrs", "int_key"],
+    [_Str("a"), float("nan"), _Plain(), _PlainAttrs(), _Color.RED, {"c": _Color.RED}, {1: "a"}],
+    ids=["str_subclass", "nan", "dataclass", "attrs", "enum", "enum_in_dict", "int_key"],
 )
 def test_only_exact_json_and_components_are_portable(value):
     with pytest.raises(PortabilityError):
