@@ -10,7 +10,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import types
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from functools import cache
 from typing import (
     Any,
@@ -29,13 +29,15 @@ from typing import (
 # Deliberately cattrs, not pydantic/msgspec: this is a public foundation downstream packages subclass, so
 # the dependency surface stays minimal and the on-disk format stable. It also coerces OmegaConf
 # ListConfig/DictConfig leaf values natively. See the design decision for the full rationale.
+import attrs
 import cattrs
 
 __all__ = ["Builds", "Component", "PortabilityError", "component", "config_of", "to_spec", "parse"]
 
 _REGISTRY: dict[str, type[Component]] = {}
 _CONFIGS: dict[type, type[Component]] = {}  # implementation -> the config that builds it
-_converter = cattrs.Converter(forbid_extra_keys=True)  # loud on a typo'd LEAF field
+# loud on a typo'd leaf field; errors raised as-is rather than grouped, so callers see the ValueError
+_converter = cattrs.Converter(forbid_extra_keys=True, detailed_validation=False)
 
 
 class PortabilityError(Exception):
@@ -164,39 +166,31 @@ def _is_component(tp: object) -> TypeGuard[type[Component]]:
     return isinstance(tp, type) and issubclass(tp, Component)
 
 
-def _has_component(tp: object) -> bool:
-    return _is_component(tp) or any(_has_component(a) for a in get_args(tp))
-
-
-def _is_json(value: object) -> bool:
+def _to_json(value: object) -> object:
     """Exact JSON types only, so a subclass is never written as its base and read back as something else."""
-    if type(value) is float:
-        return math.isfinite(value)
-    if value is None or type(value) in (bool, int, str):
-        return True
-    if type(value) is list:
-        return all(_is_json(v) for v in value)
-    return type(value) is dict and all(type(k) is str and _is_json(v) for k, v in value.items())
-
-
-def _unstructure_field(value: object) -> object:
-    if isinstance(value, Component):
-        return to_spec(value)  # nested sub-component -> nested envelope
-    if type(value) is dict:
-        if not all(type(k) is str for k in value):
-            raise PortabilityError(f"dict keys must be strings to be portable; got {sorted(map(repr, value))}.")
-        return {k: _unstructure_field(v) for k, v in value.items()}
     if type(value) in (list, tuple):
-        return [_unstructure_field(v) for v in value]  # pyright: ignore[reportGeneralTypeIssues]
-    if dataclasses.is_dataclass(value):  # a shape of its own must be a component, so its type is recorded
-        raise PortabilityError(f"{type(value).__name__} is a dataclass, not a registered component; make it one.")
-    leaf = _converter.unstructure(value)
-    if not _is_json(leaf):  # portable means components and JSON data; anything else is a live object
-        raise PortabilityError(
-            f"{type(value).__name__} has no portable form: a spec holds only components and JSON data. "
-            "Pass a component instead of a live object to make this config serializable."
-        )
-    return leaf
+        return [_to_json(v) for v in value]  # pyright: ignore[reportGeneralTypeIssues]
+    if type(value) is dict:
+        return {k: _to_json(v) for k, v in _str_keyed(value).items()}
+    if value is None or type(value) in (bool, int, str) or (type(value) is float and math.isfinite(value)):
+        return value
+    raise PortabilityError(
+        f"{type(value).__name__} has no portable form: a spec holds only components and JSON data. "
+        "Pass a component instead of a live object to make this config serializable."
+    )
+
+
+def _str_keyed[M: Mapping[Any, Any]](mapping: M) -> M:
+    if not all(type(k) is str for k in mapping):
+        raise PortabilityError(f"dict keys must be strings to be portable; got {sorted(map(repr, mapping))}.")
+    return mapping
+
+
+def _envelope(config: Component) -> dict[str, Any]:
+    if _REGISTRY.get(getattr(config, "__type_id__", "")) is not type(config):
+        raise TypeError(f"{type(config).__name__} is not registered; decorate it with @component(type_id).")
+    inner = {f.name: _converter.unstructure(getattr(config, f.name)) for f in dataclasses.fields(config)}
+    return {"type": config.__type_id__, "version": config.__version__, "config": inner}
 
 
 def to_spec(config: Component) -> dict[str, Any]:
@@ -204,48 +198,39 @@ def to_spec(config: Component) -> dict[str, Any]:
 
     Typed ``Any`` like :func:`json.loads`: a spec is data to write out, not to index into.
     """
-    if _REGISTRY.get(getattr(config, "__type_id__", "")) is not type(config):
-        raise TypeError(f"{type(config).__name__} is not registered; decorate it with @component(type_id).")
-    inner = {f.name: _unstructure_field(getattr(config, f.name)) for f in dataclasses.fields(config)}
-    return {"type": config.__type_id__, "version": config.__version__, "config": inner}
+    return _to_json(_envelope(config))  # pyright: ignore[reportReturnType]  (cattrs passes unknown objects through as-is; caught here)
 
 
-def _structure_field(value: object, ftype: Any) -> object:
-    """Structure one spec value as the annotation ``ftype``, e.g. ``dict[str, Enc] | None``.
+def _reject_shape(value: object) -> object:
+    raise PortabilityError(f"{type(value).__name__} has fields but is not a registered component; make it one.")
 
-    ``ftype`` is ``Any`` because typing cannot yet express a type form (PEP 747 ``TypeForm``).
-    """
-    origin, args = get_origin(ftype), get_args(ftype)
-    if origin is Union or origin is types.UnionType:  # incl. Optional
-        if value is None and type(None) in args:
-            return None
-        comps = [a for a in args if _is_component(a)]
-        if comps and isinstance(value, Mapping) and "type" in value:  # always take the spec branch on load
-            target = _REGISTRY.get(value["type"])
-            expected = next((c for c in comps if target is not None and issubclass(target, c)), comps[0])
-            return _structure_component(value, expected)
-        others = [a for a in args if a is not type(None) and not _is_component(a)]
-        if len(others) == 1:
-            return _structure_field(value, others[0])
-        return _converter.structure(value, ftype)
-    if _is_component(ftype):
-        return _structure_component(value, ftype)
-    if is_typeddict(ftype) and isinstance(value, Mapping):  # a params bag: each key keeps its own type
-        hints = get_type_hints(ftype)
-        unknown = set(value) - set(hints)
-        if unknown:
-            raise ValueError(f"Unknown {ftype.__name__} key(s): {sorted(unknown)}; expected from {sorted(hints)}.")
-        return {k: _structure_field(v, hints[k]) for k, v in value.items()}
-    if args and _has_component(ftype):  # a container of components: recurse so each keeps its type
-        if isinstance(origin, type) and issubclass(origin, Mapping) and isinstance(value, Mapping):
-            key_type, value_type = args
-            return {_converter.structure(k, key_type): _structure_field(v, value_type) for k, v in value.items()}
-        if origin is tuple and isinstance(value, Sequence) and not (len(args) == 2 and args[1] is Ellipsis):
-            return tuple(_structure_field(v, t) for v, t in zip(value, args, strict=True))
-        if isinstance(origin, type) and issubclass(origin, Sequence) and isinstance(value, Sequence):
-            items = [_structure_field(v, args[0]) for v in value]
-            return tuple(items) if origin is tuple else items
-    return _converter.structure(value, ftype)  # cattrs does the leaf recursion + OmegaConf coercion
+
+def _structure_union(value: object, union: Any) -> object:
+    """A union with components: the spec's ``type`` picks the member, so sibling components stay apart."""
+    args = get_args(union)
+    if value is None and type(None) in args:
+        return None
+    comps = [a for a in args if _is_component(a)]
+    if isinstance(value, Mapping) and "type" in value:
+        target = _REGISTRY.get(value["type"])
+        expected = next((c for c in comps if target is not None and issubclass(target, c)), comps[0])
+        return _structure_component(value, expected)
+    others = tuple(a for a in args if a is not type(None) and not _is_component(a))
+    if not others:
+        raise TypeError(f"Expected a spec mapping for {union}; found {type(value).__name__}.")
+    rest: Any = Union[others]  # noqa: UP007  (built from a tuple; Any as typing has no TypeForm, PEP 747)
+    return _converter.structure(value, rest)
+
+
+def _structure_params(value: object, spec: Any) -> dict[str, Any]:
+    """A params bag may be partial (its defaults are filled on construction), so it is not cattrs' TypedDict."""
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{spec.__name__} must be a mapping; found {type(value).__name__}.")
+    hints = get_type_hints(spec)
+    unknown = set(value) - set(hints)
+    if unknown:
+        raise ValueError(f"Unknown {spec.__name__} key(s): {sorted(unknown)}; expected from {sorted(hints)}.")
+    return {k: _converter.structure(v, hints[k]) for k, v in value.items()}
 
 
 def _structure_component[C: Component](spec: object, expected: type[C]) -> C:
@@ -272,13 +257,26 @@ def _structure_component[C: Component](spec: object, expected: type[C]) -> C:
         raise ValueError(f"type {type_id!r} ({target.__name__}) is not a {expected.__name__}.")
     if version not in target.__versions__:
         raise ValueError(f"Unsupported {type_id!r} config version {version}; accepted: {sorted(target.__versions__)}.")
-    field_types = _field_types(target)
+    field_types: dict[str, Any] = _field_types(target)  # type forms, typed Any until PEP 747
     known = {f.name for f in dataclasses.fields(target)}
     unknown = set(cfg) - known
     if unknown:
         raise ValueError(f"Unknown field(s) for {type_id!r}: {sorted(unknown)}; allowed: {sorted(known)}.")
-    kwargs = {name: _structure_field(cfg[name], field_types[name]) for name in cfg}
+    kwargs = {name: _converter.structure(cfg[name], field_types[name]) for name in cfg}
     return target(**kwargs)  # __post_init__ runs here (validation + canonicalization)
+
+
+# cattrs walks dicts, lists, tuples and optionals; these hooks add only what is ours. Later hooks win.
+# keys are checked before cattrs unstructures them, which would turn a tuple key into an unhashable list
+_converter.register_unstructure_hook(dict, lambda d: {k: _converter.unstructure(v) for k, v in _str_keyed(d).items()})
+_converter.register_unstructure_hook_func(lambda t: dataclasses.is_dataclass(t) or attrs.has(t), _reject_shape)
+_converter.register_unstructure_hook_func(_is_component, _envelope)  # by the runtime class, so subclasses keep theirs
+_converter.register_structure_hook_func(is_typeddict, _structure_params)
+_converter.register_structure_hook_func(
+    lambda t: get_origin(t) in (Union, types.UnionType) and any(_is_component(a) for a in get_args(t)),
+    _structure_union,
+)
+_converter.register_structure_hook_func(_is_component, _structure_component)
 
 
 def parse(spec: Mapping[str, object]) -> Component:

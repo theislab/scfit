@@ -10,6 +10,7 @@ import dataclasses
 from collections.abc import Mapping
 from typing import Annotated, Any, TypedDict, Unpack
 
+import attrs
 import pytest
 
 from scfit.params import Default, ParamsComponent
@@ -170,8 +171,15 @@ class _Plain:
     x: int = 1
 
 
+@attrs.define
+class _PlainAttrs:
+    x: int = 1
+
+
 @pytest.mark.parametrize(
-    "value", [_Str("a"), float("nan"), _Plain(), {1: "a"}], ids=["str_subclass", "nan", "dataclass", "int_key"]
+    "value",
+    [_Str("a"), float("nan"), _Plain(), _PlainAttrs(), {1: "a"}],
+    ids=["str_subclass", "nan", "dataclass", "attrs", "int_key"],
 )
 def test_only_exact_json_and_components_are_portable(value):
     with pytest.raises(PortabilityError):
