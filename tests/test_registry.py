@@ -18,18 +18,19 @@ class _Widget(Component):
 
 def test_round_trips_through_a_json_spec():
     spec = _Widget(width=5).to_spec()
-    assert spec == {"type": "test.widget", "width": 5}
+    assert spec == {"type": "test.widget", "version": 1, "width": 5}
     assert parse(json.loads(json.dumps(spec))) == _Widget(width=5)
 
 
 @pytest.mark.parametrize(
     ("spec", "match"),
     [
-        ({"type": "test.widget", "nope": 1}, "Extra inputs"),
+        ({"type": "test.widget", "version": 1, "nope": 1}, "Extra inputs"),
         ({"type": "test.nonexistent"}, "Unknown type"),
-        ({"type": "test.widget", "width": "wide"}, "valid integer"),
+        ({"type": "test.widget", "version": 1, "width": "wide"}, "valid integer"),
+        ({"type": "test.widget", "version": 2}, "Unsupported"),
     ],
-    ids=["typo_field", "unknown_type", "bad_value"],
+    ids=["typo_field", "unknown_type", "bad_value", "bad_version"],
 )
 def test_bad_specs_are_rejected(spec, match):
     with pytest.raises(ValidationError, match=match):
@@ -71,13 +72,17 @@ def test_a_family_field_keeps_each_members_class_and_fields():
         either=_Label(),
     )
     spec = config.to_spec()
-    assert spec["by_key"]["a"] == {"type": "test.one_hot", "categories": ["x"]}  # not cut to the base's fields
+    assert spec["by_key"]["a"] == {
+        "type": "test.one_hot",
+        "version": 1,
+        "categories": ["x"],
+    }  # not cut to the base's fields
     assert parse(json.loads(json.dumps(spec))) == config
 
 
 def test_a_spec_of_the_wrong_family_is_rejected():
     with pytest.raises(ValidationError, match="is not a _Enc"):
-        _Encoders.from_spec({"type": "test.encoders", "one": {"type": "test.widget"}})
+        _Encoders.from_spec({"type": "test.encoders", "version": 1, "one": {"type": "test.widget", "version": 1}})
 
 
 @component("test.node")
@@ -163,3 +168,13 @@ def test_one_config_per_implementation():
         @component("test.second")
         class _Second(_ThingFamily[_Thing]):
             pass
+
+
+def test_older_accepted_version_still_loads():
+    @component("test.grown", version=2, versions=(1, 2))
+    class _Grown(Component):
+        width: int = 3
+        height: int = 1
+
+    assert parse({"type": "test.grown", "version": 1, "width": 5}) == _Grown(width=5)
+    assert _Grown().to_spec()["version"] == 2

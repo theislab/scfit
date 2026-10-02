@@ -12,14 +12,14 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
-- `registry` on pydantic: a `Component` is a frozen pydantic model, and a spec is `{"type": type_id, **fields}` JSON. `@component(type_id)` registers it; a field typed as a family base parses any registered member, so families stay open to other packages, and each member is written with its own fields
+- `registry` on pydantic: a `Component` is a frozen pydantic model, and a spec is `{"type": type_id, "version": n, **fields}` JSON. `@component(type_id, version=, versions=)` registers it; a field typed as a family base parses any registered member, so families stay open to other packages, and each member is written with its own fields
 - `registry.Builds[Impl]` on a family base links a config to its implementation (`registry.config_of`) and types its `build`; `builds=` does the same explicitly
 - `data.SamplerParams`: a small model of the sampler settings, passed as `sampler=` (or a plain mapping) to `Loader` and `Loader.from_paths`, with per-stream overrides in `stream_samplers=`
 
 ### Removed
 
 - cattrs: validation, defaults, frozen models and JSON come from pydantic
-- Spec versions and the `{type, version, config}` envelope
+- The `{type, version, config}` envelope: `type` and `version` sit next to the fields
 - `registry.register_live`: anything a spec cannot hold raises `PortabilityError` when the spec is written
 - `registry.build`, `Component.build` and `Component.build_spec`: each family declares its own typed `build`
 - `data.SamplerKwargs`, the `batch_size` / `chunk_size` / `preload_nchunks` keywords, and sampler settings on `Stream`: pass `sampler=` / `stream_samplers=` to the loader
