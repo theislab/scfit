@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from scfit.registry import Builds, Component, PortabilityError, component, config_of, parse, to_spec
+from scfit.registry import Component, PortabilityError, component, config_of, parse, to_spec
 
 
 @component("test.widget")
@@ -135,39 +135,54 @@ class _Thing:
     pass
 
 
-class _ThingFamily[T](Component, Builds[T]):
-    def build(self) -> T:
+class _ThingFamily(Component):
+    def build(self) -> object:
         raise NotImplementedError
 
 
 @component("test.thing")
-class _ThingConfig(_ThingFamily[_Thing]):
+class _ThingConfig(_ThingFamily):
     size: int = 1
 
     def build(self) -> _Thing:
         return _Thing()
 
 
-def test_the_generic_argument_links_config_and_implementation():
+def test_the_build_annotation_links_config_and_implementation():
     assert _ThingConfig.__builds__ is _Thing
     assert config_of(_Thing) is _ThingConfig
     assert parse(_ThingConfig(size=2).to_spec()) == _ThingConfig(size=2)
 
 
-def test_builds_must_agree_with_the_generic_argument():
-    with pytest.raises(TypeError, match=r"bind Builds\[_Thing\]"):
+@component("test.early")
+class _EarlyConfig(Component):
+    def build(self) -> _Late:
+        return _Late()
 
-        @component("test.disagree", builds=_Widget)
-        class _Disagree(_ThingFamily[_Thing]):
-            pass
+
+class _Late:
+    pass
+
+
+def test_an_implementation_defined_after_its_config_links_lazily():
+    assert config_of(_Late) is _EarlyConfig
+
+
+def test_an_inherited_build_links_nothing():
+    @component("test.inherits")
+    class _Inherits(_ThingConfig):
+        pass
+
+    assert config_of(_Thing) is _ThingConfig
 
 
 def test_one_config_per_implementation():
     with pytest.raises(ValueError, match="already built by"):
 
         @component("test.second")
-        class _Second(_ThingFamily[_Thing]):
-            pass
+        class _Second(_ThingFamily):
+            def build(self) -> _Thing:
+                return _Thing()
 
 
 def test_older_accepted_version_still_loads():
