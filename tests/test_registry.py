@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import ValidationError, model_validator
 
 from scfit.registry import Component, PortabilityError, component, config_of, parse, to_spec
 
@@ -37,6 +37,25 @@ def test_round_trips_through_a_json_spec():
 def test_bad_specs_are_rejected(spec, match):
     with pytest.raises(ValidationError, match=match):
         parse(spec)
+
+
+@component("test.positive")
+class _Positive(Component):
+    n: int = 1
+
+    @model_validator(mode="after")
+    def _check(self) -> _Positive:
+        if self.n <= 0:
+            raise ValueError("n must be positive")
+        return self
+
+
+def test_copies_and_construction_are_validated():
+    with pytest.raises(ValidationError, match="positive"):
+        _Positive().model_copy(update={"n": 0})
+    with pytest.raises(ValidationError, match="positive"):
+        _Positive.model_construct(n=0)
+    assert _Positive().model_copy(update={"n": 2}) == _Positive(n=2)
 
 
 def test_components_are_frozen():

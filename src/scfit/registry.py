@@ -79,6 +79,18 @@ class Component(BaseModel):
         fields = handler(self)
         return fields if self.__type_id__ is None else {"type": self.__type_id__, "version": self.__version__, **fields}
 
+    # pydantic skips validation in both; a config is only ever made through its validators
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        """As pydantic's, but ``update`` is validated, so a copy cannot break a config's rules."""
+        if update is None:
+            return super().model_copy(deep=deep)
+        return type(self).model_validate({**dict(self), **update})
+
+    @classmethod
+    def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> Self:
+        """Validates like the constructor; pydantic's unvalidated construction is not offered."""
+        return cls.model_validate(values)
+
     def to_spec(self) -> dict[str, Any]:
         """Return the portable JSON spec; raises :class:`PortabilityError` on anything that is not JSON."""
         return to_spec(self)
