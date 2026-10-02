@@ -5,12 +5,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Required, TypedDict
 
 import anndata as ad
 import numpy as np
-
-from scfit.params import Default
+from pydantic import BaseModel, ConfigDict
 
 type Container = ad.AnnData | list[ad.AnnData]
 
@@ -24,14 +22,19 @@ __all__ = ["Container", "SamplerParams", "Stream", "Weights", "weight_vector"]
 _PRIMARY = "primary"
 
 
-class SamplerParams(TypedDict, total=False):
-    """annbatch's sampler settings for one stream, passed as ``sampler=`` to :class:`~scfit.data.Loader`."""
+class SamplerParams(BaseModel):
+    """annbatch's sampler settings for one stream, passed as ``sampler=`` to :class:`~scfit.data.Loader`.
 
-    batch_size: Required[int]
+    A plain mapping with the same keys is accepted wherever one is.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    batch_size: int
     """Rows per emitted batch for the stream. Source and target row counts need not match."""
-    preload_nchunks: Required[int]
+    preload_nchunks: int
     """Chunks per annbatch read window. annbatch validates the three sizes together."""
-    chunk_size: Annotated[int, Default(1)]
+    chunk_size: int = 1
     """annbatch read-slice size. ``1`` reads per row (any layout); ``>1`` reads contiguous chunks, so each
     sampled leaf must sit in a contiguous run of at least ``chunk_size``."""
 

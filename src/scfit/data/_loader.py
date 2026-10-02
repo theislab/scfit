@@ -26,7 +26,6 @@ from scfit.data._schema import (
     weight_vector,
 )
 from scfit.data._source import Source, build_sources, resolve_source
-from scfit.params import resolve_params
 
 __all__ = ["Loader"]
 
@@ -57,8 +56,8 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
-        sampler: SamplerParams,
-        stream_samplers: Mapping[str, SamplerParams] | None = None,
+        sampler: SamplerParams | Mapping[str, int],
+        stream_samplers: Mapping[str, SamplerParams | Mapping[str, int]] | None = None,
     ) -> None:
         links = dict(links or {})
         validate_links(primary, links)
@@ -90,14 +89,14 @@ class Loader:
                     f"stream {name!r} has no reps: metadata-only streams are EvalLoader-only (the training "
                     "Loader streams cells). Give it a rep, or iterate it with EvalLoader."
                 )
-            eff = resolve_params(stream_samplers.get(name, sampler), SamplerParams)
-            if s.in_memory and eff["chunk_size"] != 1:
+            eff = SamplerParams.model_validate(stream_samplers.get(name, sampler))
+            if s.in_memory and eff.chunk_size != 1:
                 raise ValueError(
-                    f"stream {name!r} is in_memory but chunk_size={eff['chunk_size']}: an in-memory stream is read "
+                    f"stream {name!r} is in_memory but chunk_size={eff.chunk_size}: an in-memory stream is read "
                     "from RAM in one shot and must use chunk_size=1."
                 )
             self._cfg[name] = eff
-        self._root_batch_size = self._cfg[_PRIMARY]["batch_size"]
+        self._root_batch_size = self._cfg[_PRIMARY].batch_size
 
         # One RNG per stream, spawned off default_rng(seed). Samplers deepcopy (never advance) these, so a
         # stream's oracle/target/link samplers start identical, stay in lockstep, and are seed-reproducible.
@@ -167,8 +166,8 @@ class Loader:
         seed: int = 0,
         to: str | None = None,
         preload_to_gpu: bool = False,
-        sampler: SamplerParams,
-        stream_samplers: Mapping[str, SamplerParams] | None = None,
+        sampler: SamplerParams | Mapping[str, int],
+        stream_samplers: Mapping[str, SamplerParams | Mapping[str, int]] | None = None,
     ) -> Loader:
         """Build a :class:`Loader` from zarr ``{source_key: path | [paths]}``, opened backed.
 
@@ -202,11 +201,11 @@ class Loader:
         cfg = self._cfg[name]
         try:  # annbatch enforces its own run-length rule for chunk>1; forward with stream context
             return ClassSampler(
-                chunk_size=cfg["chunk_size"],
-                preload_nchunks=cfg["preload_nchunks"],
-                batch_size=cfg["batch_size"],
+                chunk_size=cfg.chunk_size,
+                preload_nchunks=cfg.preload_nchunks,
+                batch_size=cfg.batch_size,
                 classes=self._st[name]["cats"],
-                num_samples=self._pass_len * cfg["batch_size"],
+                num_samples=self._pass_len * cfg.batch_size,
                 class_weights=self._st[name]["w"],
                 drop_last=True,
                 rng=deepcopy(self._rngs[name]),
@@ -222,9 +221,9 @@ class Loader:
         try:
             return BoundClassSampler(
                 deepcopy(self._oracle_sampler),
-                cfg["chunk_size"],
-                cfg["preload_nchunks"],
-                cfg["batch_size"],
+                cfg.chunk_size,
+                cfg.preload_nchunks,
+                cfg.batch_size,
                 classes_to_bind_on=cats,
                 # primary tuple position → link tuple position, per shared ``match_on`` column
                 on={primary.group_by.index(c): link.group_by.index(c) for c in link.match_on},

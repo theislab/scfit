@@ -12,17 +12,18 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
-- `registry.component`: the one way to register a config; makes it a frozen, keyword-only dataclass, and raises if a base declares fields without being decorated itself. `builds=` (or a base binding `registry.Builds[Impl]`) links it to its implementation, found with `registry.config_of`; a `ParamsComponent`'s params must be what that implementation's `__init__` unpacks
-- `scfit.params`: parameter bags as TypedDicts with `Annotated[type, Default(value)]` keys; a key without one is required. `resolve_params`, `resolve_init_params` (resolves against the TypedDict a class's `__init__` unpacks), `validates`, and `ParamsComponent[P]`, a component whose `params` field is typed by its generic argument
-- `data.SamplerParams`: the sampler settings as a params TypedDict, passed as `sampler=` to `Loader` and `Loader.from_paths`, with per-stream overrides in `stream_samplers=`
+- `registry` on pydantic: a `Component` is a frozen pydantic model, and a spec is `{"type": type_id, **fields}` JSON. `@component(type_id)` registers it; a field typed as a family base parses any registered member, so families stay open to other packages, and each member is written with its own fields
+- `registry.Builds[Impl]` on a family base links a config to its implementation (`registry.config_of`) and types its `build`; `builds=` does the same explicitly
+- `data.SamplerParams`: a small model of the sampler settings, passed as `sampler=` (or a plain mapping) to `Loader` and `Loader.from_paths`, with per-stream overrides in `stream_samplers=`
 
 ### Removed
 
-- `registry.register_live`: a spec now holds only registered components and exact JSON values (no subclasses, dataclasses or non-finite floats), and anything else raises `PortabilityError`
+- cattrs: validation, defaults, frozen models and JSON come from pydantic
+- Spec versions and the `{type, version, config}` envelope
+- `registry.register_live`: anything a spec cannot hold raises `PortabilityError` when the spec is written
 - `registry.build`, `Component.build` and `Component.build_spec`: each family declares its own typed `build`
-- The `type_id=` / `version=` / `versions=` class keywords: use `@component(type_id, version=..., versions=...)`
 - `data.SamplerKwargs`, the `batch_size` / `chunk_size` / `preload_nchunks` keywords, and sampler settings on `Stream`: pass `sampler=` / `stream_samplers=` to the loader
 
 ### Fixed
 
-- `registry`: TypedDict fields are structured key by key; components inside `dict`, `list` and `tuple` fields keep their type through `to_spec` / `parse` ([#14](https://github.com/theislab/scfit/issues/14))
+- `registry`: components inside `dict`, `list` and `tuple` fields keep their type through `to_spec` / `parse` ([#14](https://github.com/theislab/scfit/issues/14))
