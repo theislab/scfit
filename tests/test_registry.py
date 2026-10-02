@@ -146,19 +146,12 @@ def test_non_finite_floats_are_rejected():
 
 
 def test_an_unregistered_subclass_has_no_spec():
-    class _Unregistered(_Widget):
-        pass
-
-    with pytest.raises(TypeError, match="not registered"):
-        _Unregistered().to_spec()
-
-
-def test_a_nested_unregistered_subclass_has_no_spec():
     class _Unregistered(_OneHot):
         pass
 
-    with pytest.raises(PortabilityError, match="not registered"):
-        _Encoders(one=_Unregistered()).to_spec()
+    for config in (_Unregistered(), _Encoders(one=_Unregistered())):  # top level and nested
+        with pytest.raises(PortabilityError, match="not registered"):
+            config.to_spec()
 
 
 def test_a_member_keeps_its_fields_under_any_pydantic_entry_point():
@@ -201,7 +194,6 @@ class _ThingConfig(Component):
 
 
 def test_builds_links_config_and_implementation():
-    assert _ThingConfig.__builds__ is _Thing
     assert config_of(_Thing) is _ThingConfig
 
 

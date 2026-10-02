@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, SerializationInfo, ValidationInfo, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationInfo, model_serializer, model_validator
 from pydantic_core import PydanticSerializationError
 
 __all__ = ["Component", "PortabilityError", "component", "config_of", "to_spec", "parse"]
@@ -27,16 +27,16 @@ class Component(BaseModel):
     """Base for every portable config. Register a concrete one with :func:`component`.
 
     A subclass left unregistered is a family base, usable as the expected family in :meth:`from_spec` and as
-    a field type: a spec's ``type`` then picks the registered member, and one without a ``type`` is rejected. How a config turns into a runtime
-    object is up to its family, which declares its own typed ``build``.
+    a field type; it is never built itself. How a config turns into a runtime object is up to its family,
+    which declares its own typed ``build``.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+    # polymorphic: a member is written with its own fields, not those of the field's declared base
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False, polymorphic_serialization=True)
 
     __type_id__: ClassVar[str | None] = None
     __version__: ClassVar[int] = 1  # written
     __versions__: ClassVar[frozenset[int]] = frozenset({1})  # accepted when read
-    __builds__: ClassVar[type | None] = None  # the implementation named by `@component(builds=...)`
 
     @model_validator(mode="wrap")
     @classmethod
@@ -60,35 +60,20 @@ class Component(BaseModel):
         return handler(fields) if target is cls else target.model_validate(fields, context=info.context)  # pyright: ignore[reportReturnType]
 
     @model_serializer(mode="wrap")
-    def _tag(self, handler: Callable[[Self], dict[str, Any]], info: SerializationInfo) -> dict[str, Any]:
-        if not info.serialize_as_any:  # else pydantic writes a member as its field's declared base, dropping fields
-            # ponytail: include/exclude are not forwarded; forward them if a caller needs them on members
-            return type(self).__pydantic_serializer__.to_python(
-                self,
-                mode=info.mode,
-                by_alias=info.by_alias,
-                exclude_unset=info.exclude_unset,
-                exclude_defaults=info.exclude_defaults,
-                exclude_none=info.exclude_none,
-                round_trip=info.round_trip,
-                context=info.context,
-                serialize_as_any=True,
-            )
-        if self.__type_id__ is not None and _REGISTRY.get(self.__type_id__) is not type(self):
+    def _tag(self, handler: Callable[[Self], dict[str, Any]]) -> dict[str, Any]:
+        if _REGISTRY.get(self.__type_id__ or "") is not type(self):  # e.g. a subclass of a registered config
             raise TypeError(f"{type(self).__name__} is not registered; decorate it with @component(type_id).")
-        fields = handler(self)
-        return fields if self.__type_id__ is None else {"type": self.__type_id__, "version": self.__version__, **fields}
+        return {"type": self.__type_id__, "version": self.__version__, **handler(self)}
 
-    # pydantic skips validation in both; a config is only ever made through its validators
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
-        """As pydantic's, but ``update`` is validated, so a copy cannot break a config's rules."""
+        """As pydantic's, but ``update`` is validated; pydantic's skips validation."""
         if update is None:
             return super().model_copy(deep=deep)
         return type(self).model_validate({**dict(self), **update})
 
     @classmethod
     def model_construct(cls, _fields_set: set[str] | None = None, **values: Any) -> Self:
-        """Validates like the constructor; pydantic's unvalidated construction is not offered."""
+        """Validates like the constructor; pydantic's skips validation."""
         return cls.model_validate(values)
 
     def to_spec(self) -> dict[str, Any]:
@@ -135,7 +120,7 @@ def component[C: Component](
         linked = _CONFIGS.get(builds) if builds is not None else None
         if linked is not None and linked is not cls:
             raise ValueError(f"{builds.__name__} is already built by {linked.__name__}.")  # pyright: ignore[reportOptionalMemberAccess]
-        cls.__type_id__, cls.__version__, cls.__versions__, cls.__builds__ = type_id, version, accepted, builds
+        cls.__type_id__, cls.__version__, cls.__versions__ = type_id, version, accepted
         _REGISTRY[type_id] = cls
         if builds is not None:
             _CONFIGS[builds] = cls
@@ -154,8 +139,6 @@ def config_of(implementation: type) -> type[Component]:
 
 def to_spec(config: Component) -> dict[str, Any]:
     """Config -> portable JSON spec. Typed ``Any`` like :func:`json.loads`: a spec is data to write out."""
-    if config.__type_id__ is None or _REGISTRY.get(config.__type_id__) is not type(config):
-        raise TypeError(f"{type(config).__name__} is not registered; decorate it with @component(type_id).")
     try:
         spec = config.model_dump(mode="json")
     except PydanticSerializationError as e:

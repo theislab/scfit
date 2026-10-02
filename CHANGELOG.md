@@ -18,8 +18,8 @@ and this project adheres to [Semantic Versioning][].
 
 ### Removed
 
-- cattrs: validation, defaults, frozen models and JSON come from pydantic
-- The `{type, version, config}` envelope: `type` and `version` sit next to the fields
+- cattrs and attrs
+- The `{type, version, config}` envelope
 - `registry.register_live`: anything a spec cannot hold (a live object, or a value that does not read back) raises `PortabilityError` when the spec is written
 - `registry.build`, `Component.build` and `Component.build_spec`: each family declares its own typed `build`
 - `data.SamplerKwargs`, the `batch_size` / `chunk_size` / `preload_nchunks` keywords, and sampler settings on `Stream`: pass `sampler=` / `stream_samplers=` to the loader
