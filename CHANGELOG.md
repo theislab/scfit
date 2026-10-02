@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning][].
 ### Added
 
 - `registry` on pydantic: a `Component` is a frozen pydantic model, and a spec is `{"type": type_id, "version": n, **fields}` JSON. `@component(type_id, version=, versions=)` registers it; a field typed as a family base parses any registered member, so families stay open to other packages, and each member is written with its own fields
-- a config's own `build` return annotation links it to its implementation (`registry.config_of`)
+- `@component(type_id, builds=Impl)` links a config to its implementation (`registry.config_of`)
 - `data.SamplerParams`: a small model of the sampler settings, passed as `sampler=` (or a plain mapping) to `Loader` and `Loader.from_paths`, with per-stream overrides in `stream_samplers=`
 
 ### Removed

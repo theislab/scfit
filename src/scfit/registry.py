@@ -7,7 +7,6 @@ open: a spec's ``type`` picks the registered class, wherever a field names the f
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, Self
 
@@ -18,7 +17,6 @@ __all__ = ["Component", "PortabilityError", "component", "config_of", "to_spec",
 
 _REGISTRY: dict[str, type[Component]] = {}
 _CONFIGS: dict[type, type[Component]] = {}  # implementation -> the config that builds it
-_UNLINKED: list[type[Component]] = []  # registered configs whose `build` return names a class not defined yet
 
 
 class PortabilityError(Exception):
@@ -38,7 +36,7 @@ class Component(BaseModel):
     __type_id__: ClassVar[str | None] = None
     __version__: ClassVar[int] = 1  # written
     __versions__: ClassVar[frozenset[int]] = frozenset({1})  # accepted when read
-    __builds__: ClassVar[type | None] = None  # the class its own `build` is annotated to return
+    __builds__: ClassVar[type | None] = None  # the implementation named by `@component(builds=...)`
 
     @model_validator(mode="wrap")
     @classmethod
@@ -96,6 +94,7 @@ class Component(BaseModel):
 def component[C: Component](
     type_id: str,
     *,
+    builds: type | None = None,
     version: int = 1,
     versions: tuple[int, ...] | None = None,
 ) -> Callable[[type[C]], type[C]]:
@@ -104,8 +103,8 @@ def component[C: Component](
     Specs are written at ``version``; ``versions`` lists every version one may be read at, e.g. ``(1, 2)``
     after adding a field with a default, so v1 specs still load.
 
-    A ``build`` defined on the class links it to the class that ``build`` is annotated to return, so
-    :func:`config_of` finds the config for an implementation. One config per implementation.
+    ``builds`` names the implementation the config's ``build`` returns, so :func:`config_of` finds the
+    config for it. One config per implementation.
     """
     if not isinstance(type_id, str) or not type_id:
         raise TypeError("type_id must be a non-empty string.")
@@ -121,12 +120,13 @@ def component[C: Component](
         existing = _REGISTRY.get(type_id)
         if existing is not None and existing is not cls:
             raise ValueError(f"type_id {type_id!r} already registered to {existing.__name__}.")
-        cls.__type_id__, cls.__version__, cls.__versions__ = type_id, version, accepted
+        linked = _CONFIGS.get(builds) if builds is not None else None
+        if linked is not None and linked is not cls:
+            raise ValueError(f"{builds.__name__} is already built by {linked.__name__}.")  # pyright: ignore[reportOptionalMemberAccess]
+        cls.__type_id__, cls.__version__, cls.__versions__, cls.__builds__ = type_id, version, accepted, builds
         _REGISTRY[type_id] = cls
-        try:
-            _link(cls)
-        except NameError:  # e.g. the implementation is defined below its config; linked on first `config_of`
-            _UNLINKED.append(cls)
+        if builds is not None:
+            _CONFIGS[builds] = cls
         return cls
 
     return register
@@ -134,32 +134,10 @@ def component[C: Component](
 
 def config_of(implementation: type) -> type[Component]:
     """The config registered as building ``implementation``."""
-    for cls in list(_UNLINKED):
-        try:
-            _link(cls)
-            _UNLINKED.remove(cls)
-        except NameError:
-            pass
     try:
         return _CONFIGS[implementation]
     except KeyError:
         raise KeyError(f"no config builds {implementation.__name__}.") from None
-
-
-def _link(cls: type[Component]) -> None:
-    """Link ``cls`` to the class its own ``build`` returns; an inherited ``build`` links nothing."""
-    build = cls.__dict__.get("build")
-    if build is None:
-        return
-    target = inspect.get_annotations(build).get("return")
-    if isinstance(target, str):  # only the return: other hints may be TYPE_CHECKING-only imports
-        target = eval(target, build.__globals__)  # what `typing.get_type_hints` does for each hint
-    if not isinstance(target, type):
-        return
-    linked = _CONFIGS.setdefault(target, cls)
-    if linked is not cls:
-        raise ValueError(f"{target.__name__} is already built by {linked.__name__}.")
-    cls.__builds__ = target
 
 
 def to_spec(config: Component) -> dict[str, Any]:

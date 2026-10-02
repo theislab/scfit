@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from scfit.registry import Component, PortabilityError, component, config_of, parse, to_spec
-
-if TYPE_CHECKING:
-    from decimal import Decimal  # unresolvable at runtime, like most TYPE_CHECKING imports
 
 
 @component("test.widget")
@@ -176,67 +173,24 @@ class _Thing:
     pass
 
 
-class _ThingFamily(Component):
-    def build(self) -> object:
-        raise NotImplementedError
-
-
-@component("test.thing")
-class _ThingConfig(_ThingFamily):
+@component("test.thing", builds=_Thing)
+class _ThingConfig(Component):
     size: int = 1
 
     def build(self) -> _Thing:
         return _Thing()
 
 
-def test_the_build_annotation_links_config_and_implementation():
+def test_builds_links_config_and_implementation():
     assert _ThingConfig.__builds__ is _Thing
-    assert config_of(_Thing) is _ThingConfig
-    assert parse(_ThingConfig(size=2).to_spec()) == _ThingConfig(size=2)
-
-
-@component("test.early")
-class _EarlyConfig(Component):
-    def build(self) -> _Late:
-        return _Late()
-
-
-class _Late:
-    pass
-
-
-def test_an_implementation_defined_after_its_config_links_lazily():
-    assert config_of(_Late) is _EarlyConfig
-
-
-class _Typed:
-    pass
-
-
-@component("test.typed")
-class _TypedConfig(Component):
-    def build(self, data: Decimal) -> _Typed:
-        return _Typed()
-
-
-def test_only_the_return_hint_is_resolved():
-    assert _TypedConfig.__builds__ is _Typed
-    assert config_of(_Typed) is _TypedConfig
-
-
-def test_an_inherited_build_links_nothing():
-    @component("test.inherits")
-    class _Inherits(_ThingConfig):
-        pass
-
     assert config_of(_Thing) is _ThingConfig
 
 
 def test_one_config_per_implementation():
     with pytest.raises(ValueError, match="already built by"):
 
-        @component("test.second")
-        class _Second(_ThingFamily):
+        @component("test.second", builds=_Thing)
+        class _Second(Component):
             def build(self) -> _Thing:
                 return _Thing()
 
