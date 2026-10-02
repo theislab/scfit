@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, Self, get_type_hints
 
-from pydantic import BaseModel, ConfigDict, SerializationInfo, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, SerializationInfo, ValidationInfo, model_serializer, model_validator
 from pydantic_core import PydanticSerializationError
 
 __all__ = ["Component", "PortabilityError", "component", "config_of", "to_spec", "parse"]
@@ -41,35 +41,42 @@ class Component(BaseModel):
 
     @model_validator(mode="wrap")
     @classmethod
-    def _dispatch(cls, value: Any, handler: Callable[[Any], Self]) -> Self:
+    def _dispatch(cls, value: Any, handler: Callable[[Any], Self], info: ValidationInfo) -> Self:
         """A spec's ``type`` picks the registered class, so a field typed as a family base stays open."""
         if not (isinstance(value, Mapping) and "type" in value):
             return handler(value)
         type_id, version = value["type"], value.get("version")
         fields = {k: v for k, v in value.items() if k not in ("type", "version")}
+        if not isinstance(type_id, str):
+            raise ValueError(f"A spec's type is a string, got {type_id!r}.")
         target = _REGISTRY.get(type_id)
         if target is None:
             raise ValueError(f"Unknown type {type_id!r}; registered: {sorted(_REGISTRY)}.")
         if not issubclass(target, cls):
             raise ValueError(f"type {type_id!r} ({target.__name__}) is not a {cls.__name__}.")
-        if version not in target.__versions__:
+        if type(version) is not int or version not in target.__versions__:
             raise ValueError(f"Unsupported {type_id!r} version {version!r}; accepted: {sorted(target.__versions__)}.")
-        return handler(fields) if target is cls else target.model_validate(fields)  # pyright: ignore[reportReturnType]
+        return handler(fields) if target is cls else target.model_validate(fields, context=info.context)  # pyright: ignore[reportReturnType]
 
     @model_serializer(mode="wrap")
     def _tag(self, handler: Callable[[Self], dict[str, Any]], info: SerializationInfo) -> dict[str, Any]:
+        if not info.serialize_as_any:  # else pydantic writes a member as its field's declared base, dropping fields
+            # ponytail: include/exclude are not forwarded; forward them if a caller needs them on members
+            return type(self).__pydantic_serializer__.to_python(
+                self,
+                mode=info.mode,
+                by_alias=info.by_alias,
+                exclude_unset=info.exclude_unset,
+                exclude_defaults=info.exclude_defaults,
+                exclude_none=info.exclude_none,
+                round_trip=info.round_trip,
+                context=info.context,
+                serialize_as_any=True,
+            )
+        if self.__type_id__ is not None and _REGISTRY.get(self.__type_id__) is not type(self):
+            raise TypeError(f"{type(self).__name__} is not registered; decorate it with @component(type_id).")
         fields = handler(self)
         return fields if self.__type_id__ is None else {"type": self.__type_id__, "version": self.__version__, **fields}
-
-    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
-        """As pydantic's, but every component is written as its own class, not the field's declared base."""
-        kwargs.setdefault("serialize_as_any", True)
-        return super().model_dump(**kwargs)
-
-    def model_dump_json(self, **kwargs: Any) -> str:
-        """As pydantic's, with every component written as its own class."""
-        kwargs.setdefault("serialize_as_any", True)
-        return super().model_dump_json(**kwargs)
 
     def to_spec(self) -> dict[str, Any]:
         """Return the portable JSON spec; raises :class:`PortabilityError` on anything that is not JSON."""
@@ -84,7 +91,7 @@ class Component(BaseModel):
 
 
 def component[C: Component](
-    type_id: str | None = None,
+    type_id: str,
     *,
     version: int = 1,
     versions: tuple[int, ...] | None = None,
@@ -97,7 +104,7 @@ def component[C: Component](
     A ``build`` defined on the class links it to the class that ``build`` is annotated to return, so
     :func:`config_of` finds the config for an implementation. One config per implementation.
     """
-    if type_id is not None and (not isinstance(type_id, str) or not type_id):
+    if not isinstance(type_id, str) or not type_id:
         raise TypeError("type_id must be a non-empty string.")
     accepted = frozenset(versions) if versions is not None else frozenset({version})
     if version not in accepted or any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in accepted):
@@ -106,8 +113,8 @@ def component[C: Component](
     def register(cls: type[C]) -> type[C]:
         if not (isinstance(cls, type) and issubclass(cls, Component)):
             raise TypeError(f"@component needs a Component subclass, got {cls!r}.")
-        if type_id is None:
-            return cls
+        if reserved := {"type", "version"} & cls.model_fields.keys():
+            raise TypeError(f"{cls.__name__}: {sorted(reserved)} are reserved for the spec.")
         existing = _REGISTRY.get(type_id)
         if existing is not None and existing is not cls:
             raise ValueError(f"type_id {type_id!r} already registered to {existing.__name__}.")
@@ -149,9 +156,12 @@ def to_spec(config: Component) -> dict[str, Any]:
     if config.__type_id__ is None or _REGISTRY.get(config.__type_id__) is not type(config):
         raise TypeError(f"{type(config).__name__} is not registered; decorate it with @component(type_id).")
     try:
-        return config.model_dump(mode="json")
+        spec = config.model_dump(mode="json")
     except PydanticSerializationError as e:
         raise PortabilityError(f"{type(config).__name__} holds something a spec cannot: {e}") from None
+    if type(config).model_validate(spec) != config:  # pydantic coerces e.g. NaN, sets, enums in `Any` fields
+        raise PortabilityError(f"{type(config).__name__} does not read back from its spec; it holds non-JSON values.")
+    return spec
 
 
 def parse(spec: Mapping[str, object]) -> Component:

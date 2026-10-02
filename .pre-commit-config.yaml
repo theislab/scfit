@@ -28,7 +28,7 @@ repos:
     hooks:
       - id: pyright
         files: ^(src/scfit/registry|tests/test_registry)\.py$
-        additional_dependencies: [pydantic, numpy, pytest]
+        additional_dependencies: [pydantic, pytest]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

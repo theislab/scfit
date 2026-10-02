@@ -29,8 +29,10 @@ def test_round_trips_through_a_json_spec():
         ({"type": "test.nonexistent"}, "Unknown type"),
         ({"type": "test.widget", "version": 1, "width": "wide"}, "valid integer"),
         ({"type": "test.widget", "version": 2}, "Unsupported"),
+        ({"type": "test.widget", "version": True}, "Unsupported"),
+        ({"type": ["test.widget"], "version": 1}, "is a string"),
     ],
-    ids=["typo_field", "unknown_type", "bad_value", "bad_version"],
+    ids=["typo_field", "unknown_type", "bad_value", "bad_version", "bool_version", "list_type"],
 )
 def test_bad_specs_are_rejected(spec, match):
     with pytest.raises(ValidationError, match=match):
@@ -100,7 +102,11 @@ class _Holder(Component):
     obj: Any = None
 
 
-@pytest.mark.parametrize("live", [object(), len], ids=["instance", "callable"])
+@pytest.mark.parametrize(
+    "live",
+    [object(), len, float("nan"), {1, 2}, {1: "a"}, b"ab"],
+    ids=["instance", "callable", "nan", "set", "int_key", "bytes"],
+)
 def test_live_objects_have_no_spec(live):
     with pytest.raises(PortabilityError):
         to_spec(_Holder(obj=live))
@@ -121,6 +127,33 @@ def test_an_unregistered_subclass_has_no_spec():
 
     with pytest.raises(TypeError, match="not registered"):
         _Unregistered().to_spec()
+
+
+def test_a_nested_unregistered_subclass_has_no_spec():
+    class _Unregistered(_OneHot):
+        pass
+
+    with pytest.raises(PortabilityError, match="not registered"):
+        _Encoders(one=_Unregistered()).to_spec()
+
+
+def test_a_member_keeps_its_fields_under_any_pydantic_entry_point():
+    from pydantic import BaseModel, TypeAdapter
+
+    class _Plain(BaseModel):
+        enc: _Enc
+
+    member = _OneHot(categories=("x",))
+    assert _Plain.model_validate_json(_Plain(enc=member).model_dump_json()).enc == member
+    assert TypeAdapter(list[_Enc]).dump_python([member])[0]["categories"] == ("x",)
+
+
+def test_type_and_version_are_reserved():
+    with pytest.raises(TypeError, match="reserved"):
+
+        @component("test.reserved")
+        class _Reserved(Component):
+            version: int = 1
 
 
 def test_type_ids_are_unique():

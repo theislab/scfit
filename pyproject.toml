@@ -1,6 +1,6 @@
 [build-system]
 build-backend = "hatchling.build"
-requires = [ "hatchling", "hatch-vcs" ]
+requires = [ "hatch-vcs", "hatchling" ]
 
 [project]
 name = "scfit"
@@ -33,8 +33,8 @@ dependencies = [
   "anndata>=0.13",
   "numpy",
   "pandas",
-  # the scfit.registry Component specs; >=2.7 for `serialize_as_any`.
-  "pydantic>=2.7",
+  # the scfit.registry Component specs; >=2.12 for serializing self-referencing components.
+  "pydantic>=2.12",
   "scikit-learn",
   "scipy",
   # for debug logging (referenced from the issue template)

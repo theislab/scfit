@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 
 import anndata as ad
 import numpy as np
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PositiveInt
 
 type Container = ad.AnnData | list[ad.AnnData]
 
@@ -30,11 +30,11 @@ class SamplerParams(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    batch_size: int
+    batch_size: PositiveInt
     """Rows per emitted batch for the stream. Source and target row counts need not match."""
-    preload_nchunks: int
+    preload_nchunks: PositiveInt
     """Chunks per annbatch read window. annbatch validates the three sizes together."""
-    chunk_size: int = 1
+    chunk_size: PositiveInt = 1
     """annbatch read-slice size. ``1`` reads per row (any layout); ``>1`` reads contiguous chunks, so each
     sampled leaf must sit in a contiguous run of at least ``chunk_size``."""
 
