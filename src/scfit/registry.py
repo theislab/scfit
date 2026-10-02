@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import inspect
 import math
 import types
 from collections.abc import Callable, Mapping
@@ -114,6 +115,7 @@ def component[C: Component](
         if not (isinstance(cls, type) and issubclass(cls, Component)):
             raise TypeError(f"@component needs a Component subclass, got {cls!r}.")
         cls = dataclasses.dataclass(frozen=True, kw_only=True)(cls)
+        _check_no_dropped_fields(cls)
         if type_id is None:
             return cls
         existing = _REGISTRY.get(type_id)
@@ -135,6 +137,23 @@ def component[C: Component](
         return cls
 
     return register
+
+
+def _check_no_dropped_fields(cls: type) -> None:
+    """Raise if a Component base declares fields that did not become fields of ``cls``.
+
+    A base without ``@component()`` is not a dataclass, so its annotations are silently left out of every
+    subclass: they cannot be passed and never reach the spec. Names starting with ``_`` are metadata.
+    """
+    fields = {f.name for f in dataclasses.fields(cls)}
+    for base in cls.__mro__[1:]:
+        if issubclass(base, Component) and base is not Component:
+            dropped = [n for n in inspect.get_annotations(base) if not n.startswith("_") and n not in fields]
+            if dropped:
+                raise TypeError(
+                    f"{base.__name__} declares {dropped}, which are not fields of {cls.__name__}; "
+                    f"decorate {base.__name__} with @component()."
+                )
 
 
 def config_of(implementation: type) -> type[Component]:

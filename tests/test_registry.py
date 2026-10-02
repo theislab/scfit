@@ -277,3 +277,25 @@ def test_builds_must_agree_with_the_generic_argument():
         @component("test.disagree", builds=_Impl)
         class _Disagree(_ThingFamily[_Thing]):
             pass
+
+
+def test_fields_of_an_undecorated_base_are_not_dropped_silently():
+    class _Undecorated(Component):
+        sigma: float = 0.0
+
+    with pytest.raises(TypeError, match=r"_Undecorated declares \['sigma'\]"):
+
+        @component("test.dropped")
+        class _Child(_Undecorated):
+            eps: float = 1.0
+
+
+def test_a_field_less_family_base_needs_no_decorator():
+    class _Family(Component):
+        pass
+
+    @component("test.kept")
+    class _Child(_Family):
+        eps: float = 1.0
+
+    assert parse(_Child(eps=2.0).to_spec()) == _Child(eps=2.0)
