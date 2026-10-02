@@ -85,6 +85,11 @@ def test_a_family_field_keeps_each_members_class_and_fields():
     assert parse(json.loads(json.dumps(spec))) == config
 
 
+def test_a_family_field_needs_a_type():
+    with pytest.raises(ValidationError, match="family base"):
+        _Encoders.model_validate({"one": {"categories": ("x",)}})
+
+
 def test_a_spec_of_the_wrong_family_is_rejected():
     with pytest.raises(ValidationError, match="is not a _Enc"):
         _Encoders.from_spec({"type": "test.encoders", "version": 1, "one": {"type": "test.widget", "version": 1}})

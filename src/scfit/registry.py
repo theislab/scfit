@@ -29,7 +29,7 @@ class Component(BaseModel):
     """Base for every portable config. Register a concrete one with :func:`component`.
 
     A subclass left unregistered is a family base, usable as the expected family in :meth:`from_spec` and as
-    a field type: a spec's ``type`` then picks the registered member. How a config turns into a runtime
+    a field type: a spec's ``type`` then picks the registered member, and one without a ``type`` is rejected. How a config turns into a runtime
     object is up to its family, which declares its own typed ``build``.
     """
 
@@ -44,6 +44,8 @@ class Component(BaseModel):
     @classmethod
     def _dispatch(cls, value: Any, handler: Callable[[Any], Self], info: ValidationInfo) -> Self:
         """A spec's ``type`` picks the registered class, so a field typed as a family base stays open."""
+        if isinstance(value, Mapping) and "type" not in value and cls.__type_id__ is None:
+            raise ValueError(f"{cls.__name__} is a family base; give a spec with a 'type', or a member.")
         if not (isinstance(value, Mapping) and "type" in value):
             return handler(value)
         type_id, version = value["type"], value.get("version")
