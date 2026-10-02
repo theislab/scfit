@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from pydantic import ValidationError
 
 from scfit.registry import Component, PortabilityError, component, config_of, parse, to_spec
+
+if TYPE_CHECKING:
+    from decimal import Decimal  # unresolvable at runtime, like most TYPE_CHECKING imports
 
 
 @component("test.widget")
@@ -199,6 +202,21 @@ class _Late:
 
 def test_an_implementation_defined_after_its_config_links_lazily():
     assert config_of(_Late) is _EarlyConfig
+
+
+class _Typed:
+    pass
+
+
+@component("test.typed")
+class _TypedConfig(Component):
+    def build(self, data: Decimal) -> _Typed:
+        return _Typed()
+
+
+def test_only_the_return_hint_is_resolved():
+    assert _TypedConfig.__builds__ is _Typed
+    assert config_of(_Typed) is _TypedConfig
 
 
 def test_an_inherited_build_links_nothing():

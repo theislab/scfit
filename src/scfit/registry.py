@@ -7,8 +7,9 @@ open: a spec's ``type`` picks the registered class, wherever a field names the f
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping
-from typing import Any, ClassVar, Self, get_type_hints
+from typing import Any, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, SerializationInfo, ValidationInfo, model_serializer, model_validator
 from pydantic_core import PydanticSerializationError
@@ -17,7 +18,7 @@ __all__ = ["Component", "PortabilityError", "component", "config_of", "to_spec",
 
 _REGISTRY: dict[str, type[Component]] = {}
 _CONFIGS: dict[type, type[Component]] = {}  # implementation -> the config that builds it
-_UNLINKED: list[type[Component]] = []  # registered configs whose `build` hint names a class not defined yet
+_UNLINKED: list[type[Component]] = []  # registered configs whose `build` return names a class not defined yet
 
 
 class PortabilityError(Exception):
@@ -131,8 +132,12 @@ def component[C: Component](
 
 def config_of(implementation: type) -> type[Component]:
     """The config registered as building ``implementation``."""
-    while _UNLINKED:
-        _link(_UNLINKED.pop())
+    for cls in list(_UNLINKED):
+        try:
+            _link(cls)
+            _UNLINKED.remove(cls)
+        except NameError:
+            pass
     try:
         return _CONFIGS[implementation]
     except KeyError:
@@ -142,7 +147,11 @@ def config_of(implementation: type) -> type[Component]:
 def _link(cls: type[Component]) -> None:
     """Link ``cls`` to the class its own ``build`` returns; an inherited ``build`` links nothing."""
     build = cls.__dict__.get("build")
-    target = get_type_hints(build).get("return") if build is not None else None
+    if build is None:
+        return
+    target = inspect.get_annotations(build).get("return")
+    if isinstance(target, str):  # only the return: other hints may be TYPE_CHECKING-only imports
+        target = eval(target, build.__globals__)  # what `typing.get_type_hints` does for each hint
     if not isinstance(target, type):
         return
     linked = _CONFIGS.setdefault(target, cls)
