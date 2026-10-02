@@ -1,6 +1,6 @@
 """scfit — the family-neutral core (registry + streaming data).
 
-``import scfit`` stays light and **torch-free**: only ``registry`` (cattrs) loads eagerly.
+``import scfit`` stays light and **torch-free**: only ``registry`` (pydantic) loads eagerly.
 """
 
 from __future__ import annotations

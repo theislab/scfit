@@ -99,9 +99,7 @@ def test_multiple_links_are_keyed_by_name():
             "on_line": Stream(KEY, group_by=("line",), match_on=("line",), weights=uniform([("A",), ("B",)])),
             "on_drug": Stream(KEY, group_by=("drug",), match_on=("drug",), weights=uniform([("d1",), ("d2",)])),
         },
-        batch_size=8,
-        chunk_size=1,
-        preload_nchunks=8,
+        sampler={"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8},
         seed=0,
     )
     b = next(iter(loader))
@@ -139,14 +137,10 @@ def test_per_stream_batch_sizes_differ():
                 group_by=COLS,
                 match_on=("cell_line",),
                 weights=ctrl,
-                batch_size=4,
-                chunk_size=1,
-                preload_nchunks=4,
             )
         },
-        batch_size=8,
-        chunk_size=1,
-        preload_nchunks=8,
+        sampler={"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8},
+        stream_samplers={"ctrl": {"batch_size": 4, "chunk_size": 1, "preload_nchunks": 4}},
         seed=0,
     )
     b = next(iter(loader))

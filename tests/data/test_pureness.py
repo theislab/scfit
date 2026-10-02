@@ -1,8 +1,8 @@
 """Batch pureness — every emitted batch (primary and each linked source) is a single label.
 
 Mirrors annbatch's ``test_batches_are_class_coherent`` one level up: decode each yielded batch and assert
-it does not mix conditions, across per-row (``chunk_size=1``) and chunked (``chunk_size>1``) read configs.
-Only the read config is parametrized.
+it does not mix conditions, across per-row (``chunk_size=1``) and chunked (``chunk_size>1``) sampler settings.
+Only the sampler settings is parametrized.
 """
 
 from __future__ import annotations

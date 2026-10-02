@@ -1,8 +1,8 @@
-"""An in-memory stream must be configured with ``chunk_size=1`` — the loader refuses to guess it.
+"""An in-memory stream must read with ``chunk_size=1``, the default.
 
 A materialized (in-RAM) stream gets no benefit from chunked contiguous reads and the run-length rule is
-meaningless for it. Rather than silently rewrite the user's ``chunk_size`` (the sampler kwargs are
-deliberately explicit), :class:`~scfit.data.Loader` raises unless it is 1. Set that way, a matched control
+meaningless for it. Rather than silently rewrite a ``chunk_size`` set to something else,
+:class:`~scfit.data.Loader` raises unless it is 1. Set that way, a matched control
 with short runs sits in memory fine — the case that raises annbatch's run-length error when *streamed*.
 """
 
@@ -40,7 +40,7 @@ def test_in_memory_control_at_chunk_one_builds_despite_short_runs():
     # the actual guarantee: at chunk_size=1 the short-run (len 2) control sits in memory fine — the case
     # that raises annbatch's run-length error when the same stream is streamed (see the test below).
     loader = perturbation_loader(_source(), ctrl_in_memory=True, batch_size=8, chunk_size=1, preload_nchunks=8)
-    assert loader._cfg["ctrl"]["chunk_size"] == 1
+    assert loader._cfg["ctrl"].chunk_size == 1
     assert isinstance(loader._resolved["ctrl"], Source)  # materialized into a RAM-backed Source
     assert isinstance(loader._resolved["ctrl"].adatas[0].X, np.ndarray)
 

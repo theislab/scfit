@@ -22,7 +22,7 @@ from scfit.data._io import load_backed_adata
 LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2")
 COLS = ("cell_line", "drug")
-READ = {"batch_size": 16, "chunk_size": 16, "preload_nchunks": 1, "to": None}
+READ = {"sampler": {"batch_size": 16, "chunk_size": 16, "preload_nchunks": 1}, "to": None}
 
 
 def _adata(n_per_combo: int = 16, seed: int = 0) -> ad.AnnData:

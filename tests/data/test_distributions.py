@@ -17,7 +17,7 @@ from scheme_helpers import KEY, assert_shares, encoded_adata, leaf_shares, only_
 from scfit.data import Loader, Stream
 
 COLS = ("cell_line", "drug")
-READ = {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
+READ = {"sampler": {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}}
 
 
 @pytest.mark.parametrize(

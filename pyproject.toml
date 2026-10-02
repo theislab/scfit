@@ -1,6 +1,6 @@
 [build-system]
 build-backend = "hatchling.build"
-requires = [ "hatchling", "hatch-vcs" ]
+requires = [ "hatch-vcs", "hatchling" ]
 
 [project]
 name = "scfit"
@@ -31,10 +31,10 @@ dependencies = [
   "annbatch==0.2.1",
   # >=0.13 for the anndata.acc reference system (A.obsm[...] / adata[ref]) used by CouplingDataSchema.
   "anndata>=0.13",
-  # leaf (un)structuring for the scfit.registry Component specs.
-  "cattrs",
   "numpy",
   "pandas",
+  # the scfit.registry Component specs; >=2.13 for `polymorphic_serialization`.
+  "pydantic>=2.13",
   "scikit-learn",
   "scipy",
   # for debug logging (referenced from the issue template)
@@ -99,8 +99,8 @@ envs.docs.dependency-groups = [ "doc" ]
 # optional extra (torch) into the test env.
 envs.hatch-test.features = [ "torch" ]
 envs.hatch-test.matrix = [
-  # Test the lowest and highest supported Python versions with normal deps
-  { deps = [ "stable" ], python = [ "3.12", "3.14" ] },
+  # Test every supported Python version with normal deps
+  { deps = [ "stable" ], python = [ "3.12", "3.13", "3.14" ] },
   # Test the newest supported Python version also with pre-release deps
   { deps = [ "pre" ], python = [ "3.14" ] },
 ]
@@ -151,6 +151,9 @@ lint.per-file-ignores."*/__init__.py" = [ "F401" ]
 lint.per-file-ignores."docs/*" = [ "I" ]
 lint.per-file-ignores."tests/*" = [ "D" ]
 lint.pydocstyle.convention = "numpy"
+
+[tool.pyright]
+pythonVersion = "3.12"
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]

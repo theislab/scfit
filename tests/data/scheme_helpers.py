@@ -166,16 +166,14 @@ def perturbation_loader(
     preload_to_gpu: bool = False,
     **stream_kwargs,
 ) -> Loader:
-    """A :class:`~scfit.data.Loader` over :func:`perturbation_streams` with the given read parameters."""
+    """A :class:`~scfit.data.Loader` over :func:`perturbation_streams` with the given sampler settings."""
     primary, links = perturbation_streams(source, **stream_kwargs)
     return Loader(
         {KEY: source},
         primary=primary,
         links=links,
         seed=seed,
-        batch_size=batch_size,
-        chunk_size=chunk_size,
-        preload_nchunks=preload_nchunks,
+        sampler={"batch_size": batch_size, "chunk_size": chunk_size, "preload_nchunks": preload_nchunks},
         to=to,
         preload_to_gpu=preload_to_gpu,
     )

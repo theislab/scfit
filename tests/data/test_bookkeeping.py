@@ -26,9 +26,7 @@ def _primary_only(adata, weights, *, batch_size=8, chunk_size=1, preload_nchunks
         {KEY: adata},
         primary=Stream(KEY, group_by=COLS, weights=weights),
         seed=0,
-        batch_size=batch_size,
-        chunk_size=chunk_size,
-        preload_nchunks=preload_nchunks,
+        sampler={"batch_size": batch_size, "chunk_size": chunk_size, "preload_nchunks": preload_nchunks},
     )
     return loader if n_iters is None else loader.set_n_iters(n_iters)
 

@@ -1,8 +1,8 @@
-"""Structural validation of the ``Stream`` spec + the ``Loader``'s sampler-kwargs resolution.
+"""Structural validation of the ``Stream`` spec + the ``Loader``'s sampler resolution.
 
 The Stream cases are data-free ``__init__`` guards. The Loader cases build a tiny in-memory loader to
-exercise the resolution rules (a stream's own sampler kwargs win; else the loader's; else error) and the
-cross-stream guards (reserved name, match_on ⊆ shared, in_memory ⇒ chunk_size=1) and the per-batch leaves.
+exercise ``stream_samplers`` overriding ``sampler``, the cross-stream guards (reserved name,
+match_on ⊆ shared, in_memory ⇒ chunk_size=1) and the per-batch leaves.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def test_rep_normalizes_to_tuple():
 
 def test_metadata_only_stream_rejected_by_training_loader():
     with pytest.raises(ValueError, match="EvalLoader-only"):
-        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W, reps=()), **SAMPLER, seed=0)
+        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W, reps=()), sampler=SAMPLER, seed=0)
 
 
 def test_source_key_must_be_non_empty_string():
@@ -45,11 +45,6 @@ def test_source_key_must_be_non_empty_string():
         pytest.param({"group_by": COLS, "reps": ("X", "")}, ValueError, "loc strings", id="one_empty_rep"),
         pytest.param({"group_by": COLS, "weights": {("A",): 1.0}}, ValueError, "arity", id="weight_arity"),
         pytest.param({"group_by": COLS, "weights": {("A", "d1"): -1.0}}, ValueError, "non-negative", id="neg_weight"),
-        # sampler kwargs are all-or-nothing on a Stream
-        pytest.param({"group_by": COLS, "batch_size": 8}, ValueError, "all-or-nothing", id="partial_one"),
-        pytest.param(
-            {"group_by": COLS, "batch_size": 8, "chunk_size": 1}, ValueError, "all-or-nothing", id="partial_two"
-        ),
     ],
 )
 def test_stream_rejects(kw: dict, exc: type[Exception], msg: str):
@@ -57,39 +52,33 @@ def test_stream_rejects(kw: dict, exc: type[Exception], msg: str):
         Stream("k", **kw)
 
 
-# ── Loader: sampler-kwargs resolution (the merge's new behavior — previously untested) ─────────────────
+# ── Loader: sampler resolution ─────────────────────────────────────────────────────────────────────
 def test_stream_sampler_overrides_loader():
-    # the primary sets its own batch_size=4; the loader default is 8 → the primary uses ITS OWN (4).
+    # `stream_samplers` gives the primary batch_size=4 over the loader-wide 8.
     ld = Loader(
         SRC,
-        primary=Stream(KEY, group_by=COLS, weights=W, batch_size=4, chunk_size=1, preload_nchunks=4),
-        batch_size=8,
-        chunk_size=1,
-        preload_nchunks=8,
+        primary=Stream(KEY, group_by=COLS, weights=W),
+        sampler=SAMPLER,
+        stream_samplers={"primary": {"batch_size": 4, "chunk_size": 1, "preload_nchunks": 4}},
         seed=0,
     )
-    assert ld._cfg["primary"]["batch_size"] == 4
+    assert ld._cfg["primary"].batch_size == 4
     assert next(iter(ld))["primary"]["X"].shape[0] == 4  # and it really yields 4-row batches
 
 
 def test_stream_inherits_loader_sampler():
-    ld = Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), **SAMPLER, seed=0)
-    assert ld._cfg["primary"]["batch_size"] == 8
+    ld = Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), sampler=SAMPLER, seed=0)
+    assert ld._cfg["primary"].batch_size == 8
 
 
-def test_no_sampler_on_either_raises():
-    with pytest.raises(ValueError, match="neither the Stream nor the Loader"):
-        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), seed=0)
-
-
-def test_loader_partial_sampler_raises():
-    with pytest.raises(ValueError, match="all-or-nothing"):
-        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), batch_size=8, seed=0)
+def test_stream_samplers_must_name_a_stream():
+    with pytest.raises(ValueError, match="unknown stream"):
+        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), sampler=SAMPLER, stream_samplers={"ctlr": SAMPLER})
 
 
 def test_source_key_not_in_sources_raises():
     with pytest.raises(ValueError, match="source_key 'missing' not in sources"):
-        Loader(SRC, primary=Stream("missing", group_by=COLS, weights=W), **SAMPLER, seed=0)
+        Loader(SRC, primary=Stream("missing", group_by=COLS, weights=W), sampler=SAMPLER, seed=0)
 
 
 # ── Loader: cross-stream guards ────────────────────────────────────────────────────────────────────────
@@ -99,7 +88,7 @@ def test_reserved_primary_link_name():
             SRC,
             primary=Stream(KEY, group_by=COLS, weights=W),
             links={"primary": Stream(KEY, group_by=COLS, weights=W, match_on=("cell_line",))},
-            **SAMPLER,
+            sampler=SAMPLER,
         )
 
 
@@ -108,10 +97,8 @@ def test_match_on_must_be_shared():
         Loader(
             SRC,
             primary=Stream(KEY, group_by=("cell_line", "drug"), weights=W),
-            links={
-                "c": Stream(KEY, group_by=("drug",), match_on=("cell_line",), weights=uniform([("d1",), ("d2",)]))
-            },
-            **SAMPLER,
+            links={"c": Stream(KEY, group_by=("drug",), match_on=("cell_line",), weights=uniform([("d1",), ("d2",)]))},
+            sampler=SAMPLER,
         )
 
 
@@ -119,7 +106,8 @@ def test_in_memory_requires_chunk_one():
     with pytest.raises(ValueError, match="chunk_size=1"):
         Loader(
             SRC,
-            primary=Stream(KEY, group_by=COLS, weights=W, in_memory=True, batch_size=8, chunk_size=2, preload_nchunks=8),
+            primary=Stream(KEY, group_by=COLS, weights=W, in_memory=True),
+            sampler={"batch_size": 8, "chunk_size": 2, "preload_nchunks": 8},
             seed=0,
         )
 
@@ -130,7 +118,7 @@ def test_every_stream_reports_its_leaf():
         SRC,
         primary=Stream(KEY, group_by=COLS, weights=W),
         links={"c": Stream(KEY, group_by=COLS, weights=W, match_on=("cell_line",))},
-        **SAMPLER,
+        sampler=SAMPLER,
         seed=0,
     )
     leaves = next(iter(ld))["leaves"]
