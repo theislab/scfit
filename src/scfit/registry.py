@@ -1,7 +1,7 @@
 """The component registry and portable specs for scfit, on pydantic.
 
 A :class:`Component` is a frozen pydantic model, registered under a stable ``type_id`` with :func:`component`.
-A spec is ``{"type": type_id, "version": n, **fields}``, plain JSON. Packages built on scfit subclass it, so a family stays
+A spec is ``{"type": type_id, **fields}``, plain JSON. Packages built on scfit subclass it, so a family stays
 open: a spec's ``type`` picks the registered class, wherever a field names the family base.
 """
 
@@ -35,8 +35,6 @@ class Component(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False, polymorphic_serialization=True)
 
     __type_id__: ClassVar[str | None] = None
-    __version__: ClassVar[int] = 1  # written
-    __versions__: ClassVar[frozenset[int]] = frozenset({1})  # accepted when read
 
     @model_validator(mode="wrap")
     @classmethod
@@ -46,8 +44,8 @@ class Component(BaseModel):
             raise ValueError(f"{cls.__name__} is a family base; give a spec with a 'type', or a member.")
         if not (isinstance(value, Mapping) and "type" in value):
             return handler(value)
-        type_id, version = value["type"], value.get("version")
-        fields = {k: v for k, v in value.items() if k not in ("type", "version")}
+        type_id = value["type"]
+        fields = {k: v for k, v in value.items() if k != "type"}
         if not isinstance(type_id, str):
             raise ValueError(f"A spec's type is a string, got {type_id!r}.")
         target = _REGISTRY.get(type_id)
@@ -55,15 +53,13 @@ class Component(BaseModel):
             raise ValueError(f"Unknown type {type_id!r}; registered: {sorted(_REGISTRY)}.")
         if not issubclass(target, cls):
             raise ValueError(f"type {type_id!r} ({target.__name__}) is not a {cls.__name__}.")
-        if type(version) is not int or version not in target.__versions__:
-            raise ValueError(f"Unsupported {type_id!r} version {version!r}; accepted: {sorted(target.__versions__)}.")
         return handler(fields) if target is cls else target.model_validate(fields, context=info.context)  # pyright: ignore[reportReturnType]
 
     @model_serializer(mode="wrap")
     def _tag(self, handler: Callable[[Self], dict[str, Any]]) -> dict[str, Any]:
         if _REGISTRY.get(self.__type_id__ or "") is not type(self):  # e.g. a subclass of a registered config
             raise TypeError(f"{type(self).__name__} is not registered; decorate it with @component(type_id).")
-        return {"type": self.__type_id__, "version": self.__version__, **handler(self)}
+        return {"type": self.__type_id__, **handler(self)}
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
         """As pydantic's, but ``update`` is validated; pydantic's skips validation."""
@@ -92,35 +88,27 @@ def component[C: Component](
     type_id: str,
     *,
     builds: type | None = None,
-    version: int = 1,
-    versions: tuple[int, ...] | None = None,
 ) -> Callable[[type[C]], type[C]]:
     """Register a `Component` subclass under ``type_id``, the stable name its specs carry.
-
-    Specs are written at ``version``; ``versions`` lists every version one may be read at, e.g. ``(1, 2)``
-    after adding a field with a default, so v1 specs still load.
 
     ``builds`` names the implementation the config's ``build`` returns, so :func:`config_of` finds the
     config for it. One config per implementation.
     """
     if not isinstance(type_id, str) or not type_id:
         raise TypeError("type_id must be a non-empty string.")
-    accepted = frozenset(versions) if versions is not None else frozenset({version})
-    if version not in accepted or any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in accepted):
-        raise ValueError(f"{type_id!r}: bad version/versions ({version!r}, {sorted(accepted)}).")
 
     def register(cls: type[C]) -> type[C]:
         if not (isinstance(cls, type) and issubclass(cls, Component)):
             raise TypeError(f"@component needs a Component subclass, got {cls!r}.")
-        if reserved := {"type", "version"} & cls.model_fields.keys():
-            raise TypeError(f"{cls.__name__}: {sorted(reserved)} are reserved for the spec.")
+        if "type" in cls.model_fields:
+            raise TypeError(f"{cls.__name__}: 'type' is reserved for the spec.")
         existing = _REGISTRY.get(type_id)
         if existing is not None and existing is not cls:
             raise ValueError(f"type_id {type_id!r} already registered to {existing.__name__}.")
         linked = _CONFIGS.get(builds) if builds is not None else None
         if linked is not None and linked is not cls:
             raise ValueError(f"{builds.__name__} is already built by {linked.__name__}.")  # pyright: ignore[reportOptionalMemberAccess]
-        cls.__type_id__, cls.__version__, cls.__versions__ = type_id, version, accepted
+        cls.__type_id__ = type_id
         _REGISTRY[type_id] = cls
         if builds is not None:
             _CONFIGS[builds] = cls
