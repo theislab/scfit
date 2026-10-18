@@ -35,20 +35,25 @@ def save_pretrained(
 ) -> None:
     """Writes ``spec`` and each named state (e.g. ``{"module": module.state_dict()}``) to the folder ``path``.
 
+    Everything is checked before the folder is touched. Tensors sharing memory (tied weights) are refused.
+
     :raises FileExistsError: If ``path`` already holds a spec and ``overwrite`` is `False`.
-    :raises scfit.registry.PortabilityError: If the spec holds a live object, before anything is written.
+    :raises ValueError: If a state name is not a plain folder name, or a state ties tensors.
+    :raises scfit.registry.PortabilityError: If the spec holds a live object.
     """
     out = Path(path)
     document = spec.to_spec()
-    if not overwrite and (out / CONFIG_NAME).exists():
-        raise FileExistsError(f"{out / CONFIG_NAME} already exists. Use overwrite=True.")
+    tensors = {name: _checked(name, state) for name, state in (states or {}).items()}
+    if (out / CONFIG_NAME).exists():
+        if not overwrite:
+            raise FileExistsError(f"{out / CONFIG_NAME} already exists. Use overwrite=True.")
+        for stale in out.glob(f"*/{WEIGHTS_NAME}"):  # a state left from the earlier save would load back with this one
+            stale.unlink()
     out.mkdir(parents=True, exist_ok=True)
-    for stale in out.glob(f"*/{WEIGHTS_NAME}"):  # a state left from an earlier save would load back with this one
-        stale.unlink()
     (out / CONFIG_NAME).write_text(json.dumps(document, indent=2))
-    for name, state in (states or {}).items():
+    for name, state in tensors.items():
         (out / name).mkdir(exist_ok=True)
-        save_file({k: v.contiguous() for k, v in state.items()}, out / name / WEIGHTS_NAME)
+        save_file(state, out / name / WEIGHTS_NAME)
     (out / "README.md").write_text(_model_card(document))
 
 
@@ -58,13 +63,27 @@ def load_pretrained(
     """The spec and the named states saved in a local folder, or in a Hub repo (``"org/name"``)."""
     src = Path(path_or_repo_id)
     if not src.is_dir():
+        if isinstance(path_or_repo_id, Path) or src.exists() or str(path_or_repo_id).startswith((".", "/", "~")):
+            raise FileNotFoundError(f"No saved folder at {src}.")
         src = Path(snapshot_download(str(path_or_repo_id), revision=revision))
     spec = parse(json.loads((src / CONFIG_NAME).read_text()))
     return spec, {f.parent.name: load_file(f) for f in src.glob(f"*/{WEIGHTS_NAME}")}
 
 
+def _checked(name: str, state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """``state`` as contiguous tensors, after checking it can be written under ``name``."""
+    if name in ("", ".", "..") or Path(name).name != name:
+        raise ValueError(f"State name {name!r} is not a plain folder name.")
+    if not all(isinstance(v, torch.Tensor) for v in state.values()):
+        raise TypeError(f"State {name!r} holds values that are not tensors.")
+    storages = [v.untyped_storage().data_ptr() for v in state.values() if v.numel()]
+    if len(storages) != len(set(storages)):
+        raise ValueError(f"State {name!r} ties tensors (shared memory), which safetensors cannot store.")
+    return {k: v.contiguous() for k, v in state.items()}
+
+
 def _model_card(document: Mapping[str, Any]) -> str:
-    tags = "\n".join(f"- {tag}" for tag in ["scfit", *sorted(_types(document))])
+    tags = "\n".join(f"- {json.dumps(tag)}" for tag in ["scfit", *sorted(_types(document))])
     return f"---\nlibrary_name: scfit\ntags:\n{tags}\n---\n\nLoad with `scfit.pretrained.load_pretrained(repo_id)`.\n"
 
 

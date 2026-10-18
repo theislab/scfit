@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 import torch
 
-from scfit import pretrained
 from scfit.pretrained import load_pretrained, save_pretrained
 from scfit.registry import Component, component
 
@@ -37,7 +36,7 @@ def test_model_card_tags_every_type(tmp_path):
     card = (tmp_path / "README.md").read_text()
     assert "library_name: scfit" in card
     for tag in ("scfit", "test.pretrained.model", "test.pretrained.head"):
-        assert f"- {tag}\n" in card
+        assert f'- "{tag}"\n' in card
 
 
 def test_refuses_to_overwrite(tmp_path):
@@ -54,13 +53,34 @@ def test_overwrite_drops_states_of_the_earlier_save(tmp_path):
     assert load_pretrained(tmp_path)[1].keys() == {"module"}
 
 
-def test_a_repo_id_is_downloaded(tmp_path, monkeypatch):
-    save_pretrained(tmp_path, _Model(depth=4))
-    calls = []
-    monkeypatch.setattr(
-        pretrained,
-        "snapshot_download",
-        lambda repo_id, revision=None: calls.append((repo_id, revision)) or tmp_path,
-    )
-    assert load_pretrained("org/model", revision="v1")[0] == _Model(depth=4)
-    assert calls == [("org/model", "v1")]
+def test_a_missing_local_folder_is_not_sent_to_the_hub(tmp_path):
+    for missing in (tmp_path / "nope", "./nope", "/nope"):
+        with pytest.raises(FileNotFoundError, match="No saved folder"):
+            load_pretrained(missing)
+
+
+def test_leaves_a_folder_it_did_not_save_alone(tmp_path):
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "model.safetensors").write_text("not ours")
+    save_pretrained(tmp_path, _Model())
+    assert (tmp_path / "other" / "model.safetensors").read_text() == "not ours"
+
+
+@pytest.mark.parametrize(
+    ("states", "error"),
+    [
+        ({"../escape": {"w": torch.zeros(1)}}, ValueError),
+        ({"a/b": {"w": torch.zeros(1)}}, ValueError),
+        ({"module": {"w": 1}}, TypeError),
+        ({"module": {"a": (w := torch.zeros(2)), "b": w}}, ValueError),
+    ],
+    ids=["escaping_name", "nested_name", "not_a_tensor", "tied"],
+)
+def test_a_bad_state_leaves_the_earlier_save_intact(tmp_path, states, error):
+    save_pretrained(tmp_path, _Model(depth=2), {"module": {"w": torch.ones(1)}})
+    with pytest.raises(error):
+        save_pretrained(tmp_path, _Model(depth=3), states, overwrite=True)
+    spec, loaded = load_pretrained(tmp_path)
+    assert spec == _Model(depth=2)
+    assert torch.equal(loaded["module"]["w"], torch.ones(1))
+    assert not (tmp_path.parent / "escape").exists()
