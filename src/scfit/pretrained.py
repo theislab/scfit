@@ -1,8 +1,10 @@
-"""Save, load and share a spec with its weights, in the Hugging Face Hub layout.
+"""Save and load a spec with its weights, in the Hugging Face Hub layout.
 
 A folder holds ``config.json`` (the spec), one ``<name>/model.safetensors`` per state and a ``README.md``
-model card, so it can be pushed to the Hub as is. A folder reads back under the package versions that wrote it.
-Needs ``scfit[hub]``.
+model card. A folder reads back under the package versions that wrote it. Needs ``scfit[hub]``.
+
+Share one with ``huggingface_hub.HfApi``: ``create_repo(repo_id, exist_ok=True)``, then
+``upload_folder(repo_id=repo_id, folder_path=path)``; :func:`load_pretrained` takes the repo id.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from scfit.registry import Component, parse
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["save_pretrained", "load_pretrained", "push_to_hub"]
+__all__ = ["save_pretrained", "load_pretrained"]
 
 CONFIG_NAME = "config.json"
 WEIGHTS_NAME = "model.safetensors"
@@ -42,6 +44,8 @@ def save_pretrained(
     if not overwrite and (out / CONFIG_NAME).exists():
         raise FileExistsError(f"{out / CONFIG_NAME} already exists. Use overwrite=True.")
     out.mkdir(parents=True, exist_ok=True)
+    for stale in out.glob(f"*/{WEIGHTS_NAME}"):  # a state left from an earlier save would load back with this one
+        stale.unlink()
     (out / CONFIG_NAME).write_text(json.dumps(document, indent=2))
     for name, state in (states or {}).items():
         (out / name).mkdir(exist_ok=True)
@@ -62,15 +66,6 @@ def load_pretrained(
         src = Path(snapshot_download(str(path_or_repo_id), revision=revision))
     spec = parse(json.loads((src / CONFIG_NAME).read_text()))
     return spec, {f.parent.name: load_file(f) for f in src.glob(f"*/{WEIGHTS_NAME}")}
-
-
-def push_to_hub(path: str | Path, repo_id: str, *, private: bool | None = None, token: str | None = None) -> str:
-    """Uploads the folder ``path`` to the Hub repo ``repo_id``, creating it if needed; returns the commit url."""
-    from huggingface_hub import HfApi
-
-    api = HfApi(token=token)
-    api.create_repo(repo_id, private=private, exist_ok=True)
-    return str(api.upload_folder(repo_id=repo_id, folder_path=path))
 
 
 def _model_card(document: Mapping[str, Any]) -> str:

@@ -9,8 +9,8 @@ from . import registry
 
 __all__ = ["registry", "data", "pretrained"]
 
-# ``data`` (the annbatch streaming stack, ``scfit[data]``) loads on first attribute access or explicit
-# submodule import, so a consumer that only wants the component registry never drags in the data deps.
+# ``data`` (the annbatch streaming stack) and ``pretrained`` (``scfit[hub]``) load on first attribute access or
+# explicit submodule import, so a consumer that only wants the component registry never drags in their deps.
 _LAZY = frozenset({"data", "pretrained"})
 
 

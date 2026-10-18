@@ -53,7 +53,7 @@ optional-dependencies.cuda12 = [
 optional-dependencies.hub = [
   "huggingface-hub>=0.23",
   "safetensors>=0.4",
-  "torch>=2",
+  "scfit[torch]",
 ]
 # torch is the one optional part of the data stack: scfit.data imports it lazily, only when the loader is
 # asked to emit torch tensors (Loader(..., to="torch")). The default is to=None (no conversion, no torch),
