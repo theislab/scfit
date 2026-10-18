@@ -7,11 +7,11 @@ from __future__ import annotations
 
 from . import registry
 
-__all__ = ["registry", "data"]
+__all__ = ["registry", "data", "pretrained"]
 
 # ``data`` (the annbatch streaming stack, ``scfit[data]``) loads on first attribute access or explicit
 # submodule import, so a consumer that only wants the component registry never drags in the data deps.
-_LAZY = frozenset({"data"})
+_LAZY = frozenset({"data", "pretrained"})
 
 
 def __getattr__(name: str):
