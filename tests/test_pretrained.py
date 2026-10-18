@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
-torch = pytest.importorskip("torch")
-pytest.importorskip("safetensors")
-
-from scfit.pretrained import load_pretrained, save_pretrained  # noqa: E402
-from scfit.registry import Component, component  # noqa: E402
+from scfit import pretrained
+from scfit.pretrained import load_pretrained, save_pretrained
+from scfit.registry import Component, component
 
 
 @component("test.pretrained.head")
@@ -56,11 +55,10 @@ def test_overwrite_drops_states_of_the_earlier_save(tmp_path):
 
 
 def test_a_repo_id_is_downloaded(tmp_path, monkeypatch):
-    huggingface_hub = pytest.importorskip("huggingface_hub")
     save_pretrained(tmp_path, _Model(depth=4))
     calls = []
     monkeypatch.setattr(
-        huggingface_hub,
+        pretrained,
         "snapshot_download",
         lambda repo_id, revision=None: calls.append((repo_id, revision)) or tmp_path,
     )

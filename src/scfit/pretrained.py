@@ -1,7 +1,7 @@
 """Save and load a spec with its weights, in the Hugging Face Hub layout.
 
 A folder holds ``config.json`` (the spec), one ``<name>/model.safetensors`` per state and a ``README.md``
-model card. A folder reads back under the package versions that wrote it. Needs ``scfit[hub]``.
+model card. A folder reads back under the package versions that wrote it.
 
 Share one with ``huggingface_hub.HfApi``: ``create_repo(repo_id, exist_ok=True)``, then
 ``upload_folder(repo_id=repo_id, folder_path=path)``; :func:`load_pretrained` takes the repo id.
@@ -12,12 +12,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import torch
+from huggingface_hub import snapshot_download
+from safetensors.torch import load_file, save_file
 
 from scfit.registry import Component, parse
-
-if TYPE_CHECKING:
-    import torch
 
 __all__ = ["save_pretrained", "load_pretrained"]
 
@@ -37,8 +38,6 @@ def save_pretrained(
     :raises FileExistsError: If ``path`` already holds a spec and ``overwrite`` is `False`.
     :raises scfit.registry.PortabilityError: If the spec holds a live object, before anything is written.
     """
-    from safetensors.torch import save_file
-
     out = Path(path)
     document = spec.to_spec()
     if not overwrite and (out / CONFIG_NAME).exists():
@@ -57,12 +56,8 @@ def load_pretrained(
     path_or_repo_id: str | Path, *, revision: str | None = None
 ) -> tuple[Component, dict[str, dict[str, torch.Tensor]]]:
     """The spec and the named states saved in a local folder, or in a Hub repo (``"org/name"``)."""
-    from safetensors.torch import load_file
-
     src = Path(path_or_repo_id)
     if not src.is_dir():
-        from huggingface_hub import snapshot_download
-
         src = Path(snapshot_download(str(path_or_repo_id), revision=revision))
     spec = parse(json.loads((src / CONFIG_NAME).read_text()))
     return spec, {f.parent.name: load_file(f) for f in src.glob(f"*/{WEIGHTS_NAME}")}

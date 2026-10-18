@@ -31,14 +31,18 @@ dependencies = [
   "annbatch==0.2.1",
   # >=0.13 for the anndata.acc reference system (A.obsm[...] / adata[ref]) used by CouplingDataSchema.
   "anndata>=0.13",
+  # scfit.pretrained: specs with their weights, in the Hugging Face Hub layout
+  "huggingface-hub>=0.23",
   "numpy",
   "pandas",
   # the scfit.registry Component specs; >=2.13 for `polymorphic_serialization`.
   "pydantic>=2.13",
+  "safetensors>=0.4",
   "scikit-learn",
   "scipy",
   # for debug logging (referenced from the issue template)
   "session-info2",
+  "torch>=2",
   # annbatch's high-performance zarr codec pipeline (zarrs-python) for local-filesystem out-of-core reads;
   # strongly recommended. Equivalent to annbatch's `zarrs` extra.
   "zarrs>=0.2.1",
@@ -48,18 +52,6 @@ dependencies = [
 # CUDA 12.x only (cupy-cuda12x); add a `cuda11` extra with cupy-cuda11x if an 11.x wheel is ever needed.
 optional-dependencies.cuda12 = [
   "cupy-cuda12x; sys_platform=='linux'",
-]
-# Saving and sharing specs with their weights (scfit.pretrained), in the Hugging Face Hub layout.
-optional-dependencies.hub = [
-  "huggingface-hub>=0.23",
-  "safetensors>=0.4",
-  "scfit[torch]",
-]
-# torch is the one optional part of the data stack: scfit.data imports it lazily, only when the loader is
-# asked to emit torch tensors (Loader(..., to="torch")). The default is to=None (no conversion, no torch),
-# so install `scfit[torch]` only when you want torch/GPU batches.
-optional-dependencies.torch = [
-  "torch>=2",
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://scfit.readthedocs.io/"
@@ -101,9 +93,6 @@ envs.docs.scripts.build = "sphinx-build -M html docs docs/_build -W {args}"
 envs.docs.scripts.clean = "git clean -fdX -- {args:docs}"
 envs.docs.scripts.open = "python -m webbrowser -t docs/_build/html/index.html"
 envs.docs.dependency-groups = [ "doc" ]
-# data deps ship by default now; the loader test helpers exercise the to="torch" path, so pull the one
-# optional extra (torch) into the test env, and `hub` for the save/load tests.
-envs.hatch-test.features = [ "hub", "torch" ]
 envs.hatch-test.matrix = [
   # Test every supported Python version with normal deps
   { deps = [ "stable" ], python = [ "3.12", "3.13", "3.14" ] },
