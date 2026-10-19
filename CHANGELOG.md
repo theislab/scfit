@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-10-19
+
 ### Added
 
 - `Stream(group_by=())`: every cell is one group, whose leaf is `()`, for unconditional streams (no grouping column needed)
