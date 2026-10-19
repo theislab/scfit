@@ -22,13 +22,8 @@ classifiers = [
 ]
 dynamic = [ "version" ]
 dependencies = [
-  # The streaming data layer (scfit.data) ships by default. It needs annbatch's ClassSampler plus three
-  # fork-only bits — BoundClassSampler, the per-batch `label`, and the #256 multi-dataset purity fix. The
-  # shim in scfit/data/_annbatch_shim reproduces those over STOCK annbatch (vendored samplers + a
-  # Loader.__iter__ patch), so we pin a *released* version here instead of a git fork — which is what keeps
-  # scfit itself publishable to PyPI (direct URL references are rejected). Must stay ==0.2.1: the shim is
-  # coupled to that release's loader internals. Upstream the fork's features to move to `annbatch>=X`.
-  "annbatch==0.2.1",
+  # The streaming data layer (scfit.data) ships by default; its class samplers come from annbatch.
+  "annbatch>=0.3.1",
   # >=0.13 for the anndata.acc reference system (A.obsm[...] / adata[ref]) used by CouplingDataSchema.
   "anndata>=0.13",
   # scfit.pretrained: specs with their weights, in the Hugging Face Hub layout
@@ -110,9 +105,6 @@ envs.hatch-test.dependency-groups = [ "dev", "test" ]
 line-length = 120
 src = [ "src" ]
 extend-include = [ "*.ipynb" ]
-# Vendored verbatim from the annbatch fork (see scfit/data/_annbatch_shim); kept unformatted so it stays
-# diffable against upstream for future syncs.
-extend-exclude = [ "src/scfit/data/_annbatch_shim" ]
 format.docstring-code-format = true
 lint.select = [
   "B",      # flake8-bugbear

@@ -2,21 +2,22 @@
 
 The primary draws a per-batch class schedule ∝ its weights via an annbatch
 :class:`~annbatch.samplers.ClassSampler`; every link replays that schedule onto its own cells via a
-:class:`~annbatch.samplers.BoundClassSampler`, matched on its ``match_on`` columns.
+:class:`~scfit.data._bound_sampler.BoundClassSampler`, matched on its ``match_on`` columns.
 """
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Iterator, Mapping
 from copy import deepcopy
 
 import anndata as ad
 import numpy as np
+import pandas as pd
 from annbatch import Loader as AnnbatchLoader  # annbatch's low-level per-rep loader (not scfit's `Loader`)
+from annbatch.samplers import ClassSampler
 
-# ClassSampler/BoundClassSampler + the loader's `label`/#256 behaviour are fork-only; the shim vendors them
-# over stock annbatch==0.2.1 (and patches AnnbatchLoader.__iter__ on import) so scfit stays PyPI-publishable.
-from scfit.data._annbatch_shim import BoundClassSampler, ClassSampler
+from scfit.data._bound_sampler import BoundClassSampler
 from scfit.data._io import is_backed_array, open_source
 from scfit.data._schema import (
     _PRIMARY,
@@ -28,6 +29,8 @@ from scfit.data._schema import (
 from scfit.data._source import Source, build_sources, resolve_source
 
 __all__ = ["Loader"]
+
+_LEAF = "leaf"  # the obs column each per-rep annbatch loader carries: every row's group_by tuple
 
 
 class Loader:
@@ -224,10 +227,10 @@ class Loader:
                 cfg.chunk_size,
                 cfg.preload_nchunks,
                 cfg.batch_size,
-                classes_to_bind_on=cats,
+                inner_classes=self._st[_PRIMARY]["cats"],
+                classes=cats,
                 # primary tuple position → link tuple position, per shared ``match_on`` column
                 on={primary.group_by.index(c): link.group_by.index(c) for c in link.match_on},
-                classes=cats,
                 class_weights=self._st[name]["w"],
                 rng=deepcopy(self._rngs[name]),
             )
@@ -235,19 +238,26 @@ class Loader:
             raise ValueError(f"stream {name!r}: {e}") from e
 
     def _build_per_rep_loaders(self, name: str, sampler: ClassSampler | BoundClassSampler) -> dict[str, AnnbatchLoader]:
-        # One annbatch Loader per rep; each deepcopies the sampler so the reps stay aligned.
+        # One annbatch Loader per rep; each deepcopies the sampler so the reps stay aligned. Each file carries
+        # its rows' leaf as obs, so a batch reports the group it was drawn from (`_LEAF` in its obs).
         src, s, to = self._resolved[name], self._streams[name], self._to
+        cats = self._st[name]["cats"]
         loaders: dict[str, AnnbatchLoader] = {}
         for loc in s.reps:
             base = AnnbatchLoader(
                 batch_sampler=deepcopy(sampler), return_index=False, to=to, preload_to_gpu=self._preload_to_gpu
             )
             backings = src.rep(loc)
-            # in-memory arrays → add_adatas (obs-free X wrapper); backed (zarr / CSRDataset) → add_datasets
+            offsets = np.cumsum([0, *(b.shape[0] for b in backings)])
+            obs = [
+                pd.DataFrame({_LEAF: cats[a:b]}, index=np.arange(a, b).astype(str))
+                for a, b in itertools.pairwise(offsets)
+            ]
+            # in-memory arrays → add_adatas (X wrapper); backed (zarr / CSRDataset) → add_datasets
             loaders[loc] = (
-                base.add_adatas([ad.AnnData(X=b) for b in backings])
+                base.add_adatas([ad.AnnData(X=b, obs=o) for b, o in zip(backings, obs, strict=True)])
                 if not is_backed_array(backings[0])
-                else base.add_datasets(backings)
+                else base.add_datasets(backings, obs=obs)
             )
         return loaders
 
@@ -280,13 +290,8 @@ class Loader:
         reps, label = {}, None
         for loc in self._streams[name].reps:
             batch = next(self._iters[name][loc])
-            reps[loc], label = batch["X"], batch["label"]
+            reps[loc], label = batch["X"], batch["obs"][_LEAF].iloc[0]
         return reps, label
-
-    def _leaf_of(self, name: str, label: object) -> tuple:
-        """The stream's own leaf: the primary's ``label`` as-is; a link's is ``label`` past ``match_on``."""
-        leaf = tuple(label)
-        return leaf if name == _PRIMARY else leaf[len(self._streams[name].match_on) :]
 
     def __next__(self) -> dict[str, dict]:
         if self.n_iters is not None and self._since_pause >= self.n_iters:
@@ -308,6 +313,6 @@ class Loader:
         leaves: dict = {}
         for name in (_PRIMARY, *self._links):
             out[name], label = self._stream_next(name)
-            leaves[name] = self._leaf_of(name, label)
+            leaves[name] = tuple(label)  # the stream's own group_by tuple
         out["leaves"] = leaves  # the group each stream drew this batch — index your own encodings with it
         return out
