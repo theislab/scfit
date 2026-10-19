@@ -73,7 +73,8 @@ class Stream:
         each leaf still resolves to whichever dataset holds it. Unified datasets must share the streamed
         rep's feature dimension (``shape[1]``).
     group_by
-        Columns whose unique combinations define the groups sampled (the leaves).
+        Columns whose unique combinations define the groups sampled (the leaves). ``()`` makes every cell one
+        group, whose leaf is ``()``.
     reps
         Representation location(s) to stream — a loc string ``"X"`` / ``"obsm/<k>"`` / ``"layers/<k>"``, or a
         tuple of them for several **aligned** reps of the same cells. ``()`` is **metadata-only** — no cell
@@ -106,8 +107,6 @@ class Stream:
         if len(set(keys)) != len(keys):
             raise ValueError(f"Stream.source_key has duplicate keys: {source_key!r}.")
         group_by = tuple(group_by)
-        if not group_by:
-            raise ValueError("Stream.group_by must be non-empty.")
         if isinstance(reps, str):
             reps = (reps,)
         elif isinstance(reps, tuple | list):

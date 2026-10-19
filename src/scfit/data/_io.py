@@ -92,7 +92,8 @@ def materialize_node(
     row_idx = np.flatnonzero(np.isin(codes, selected))  # ascending global rows of the selected leaves
     reps = {loc: _read_rows(source, loc, row_idx) for loc in stream.reps}  # keyed by loc string
     sub_obs = obs.iloc[row_idx].reset_index(drop=True)
-    order = sub_obs.sort_values(list(cols), kind="stable").index.to_numpy()  # contiguous runs for chunk>1
+    # contiguous runs for chunk>1; with no grouping every row is already in the one run
+    order = sub_obs.sort_values(list(cols), kind="stable").index.to_numpy() if cols else np.arange(len(sub_obs))
     sub_obs, reps = sub_obs.iloc[order].reset_index(drop=True), {k: v[order] for k, v in reps.items()}
     sub_obs.index = sub_obs.index.astype(str)
     adata = ad.AnnData(X=reps["X"], obs=sub_obs) if "X" in reps else ad.AnnData(obs=sub_obs)  # X -> n_var inferred
@@ -122,6 +123,8 @@ def leaf_codes(obs: pd.DataFrame, cols: Sequence[str]) -> tuple[np.ndarray, list
     identical either way).
     """
     cols = list(cols)
+    if not cols:  # no grouping: every cell is in the one leaf ()
+        return np.zeros(len(obs), dtype=np.int64), [()] if len(obs) else []
     sub = obs[cols]
     # leaves keep the source dtypes' `.to_numpy()` element types (loop over the FEW unique rows only).
     leaves = sorted((tuple(r) for r in sub.drop_duplicates().to_numpy()), key=lambda t: tuple(map(str, t)))
