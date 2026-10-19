@@ -67,7 +67,7 @@ class Source:
         gb = tuple(group_by)
         if gb not in self._leaf_cache:
             codes, leaves = leaf_codes(obs_columns(self._adatas, gb), gb)
-            cats = pd.Categorical.from_codes(codes, pd.MultiIndex.from_tuples(leaves).to_flat_index())
+            cats = pd.Categorical.from_codes(codes, pd.Index(leaves, tupleize_cols=False))
             self._leaf_cache[gb] = _Factorized(codes, leaves, cats)
         return self._leaf_cache[gb]
 
@@ -96,7 +96,7 @@ class Source:
         f = self.factorize(tuple(stream.group_by))
         adata, codes, leaves = materialize_node(self._adatas, stream, (f.codes, f.leaves))
         sub = Source([adata])
-        cats = pd.Categorical.from_codes(codes, pd.MultiIndex.from_tuples(leaves).to_flat_index())
+        cats = pd.Categorical.from_codes(codes, pd.Index(leaves, tupleize_cols=False))
         sub._leaf_cache[tuple(stream.group_by)] = _Factorized(codes, leaves, cats)
         return sub
 

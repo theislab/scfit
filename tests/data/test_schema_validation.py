@@ -39,7 +39,6 @@ def test_source_key_must_be_non_empty_string():
 @pytest.mark.parametrize(
     ("kw", "exc", "msg"),
     [
-        pytest.param({"group_by": ()}, ValueError, "group_by must be non-empty", id="empty_group_by"),
         pytest.param({"group_by": COLS, "reps": 123}, ValueError, "loc strings", id="non_string_rep"),
         pytest.param({"group_by": COLS, "reps": ""}, ValueError, "loc strings", id="empty_rep"),
         pytest.param({"group_by": COLS, "reps": ("X", "")}, ValueError, "loc strings", id="one_empty_rep"),
