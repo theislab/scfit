@@ -11,12 +11,13 @@ import warnings
 
 import anndata as ad
 import numpy as np
+import pandas as pd
 import pytest
 import scipy.sparse as sp
 from annbatch import DatasetCollection
 from scheme_helpers import KEY, perturbation_obs, uniform, write_zarr
 
-from scfit.data import Loader, Stream
+from scfit.data import Loader, Stream, obs_columns, open_source
 from scfit.data._io import load_backed_adata
 
 LINES = ("A", "B")
@@ -74,6 +75,35 @@ def test_load_backed_adata_layers_and_no_x(tmp_path):
     assert backed.X is None  # X not requested
     assert "log1p" in backed.layers  # requested layer present
     assert list(backed.obs.columns) == ["cell_line"]
+
+
+def test_load_backed_adata_reads_only_requested_uns(tmp_path):
+    adata = _adata()
+    adata.uns["drug"] = {"a": np.arange(3.0), "b": np.ones(3)}
+    adata.uns["unused"] = {"x": 1}
+    g = _open_group(write_zarr(adata, tmp_path / "a.zarr"))
+    backed = load_backed_adata(g, keys=(), cols=("cell_line",), uns=("drug",))
+    assert list(backed.uns) == ["drug"]
+    np.testing.assert_array_equal(backed.uns["drug"]["a"], np.arange(3.0))
+
+
+# ── public: open_source / obs_columns over several stores ──────────────────────────────────────
+def test_open_source_reads_a_list_of_stores_as_backed_adata(tmp_path):
+    adata = _adata()
+    adata.uns["drug"] = {"a": np.arange(3.0)}
+    paths = [write_zarr(adata[:10].copy(), tmp_path / "a.zarr"), write_zarr(adata[10:].copy(), tmp_path / "b.zarr")]
+    backed = open_source(paths, keys=("obsm/emb",), cols=("cell_line",), uns=("drug",))
+    assert [a.n_obs for a in backed] == [10, adata.n_obs - 10]
+    assert all("drug" in a.uns and list(a.obs.columns) == ["cell_line"] for a in backed)
+
+
+def test_obs_columns_stacks_files_with_the_union_of_categories():
+    a = ad.AnnData(obs=pd.DataFrame({"c": pd.Categorical(["x", "x"])}, index=["0", "1"]))
+    b = ad.AnnData(obs=pd.DataFrame({"c": pd.Categorical(["y"])}, index=["0"]))
+    obs = obs_columns([a, b], ["c"])
+    assert list(obs.index) == [0, 1, 2] and list(obs["c"]) == ["x", "x", "y"]
+    assert set(obs["c"].cat.categories) == {"x", "y"}
+    assert list(a.obs["c"].cat.categories) == ["x"]  # the caller's obs is untouched
 
 
 # ── Loader.from_paths: source-value shapes ─────────────────────────────────────────────────────

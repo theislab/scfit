@@ -157,7 +157,12 @@ def leaf_codes(obs: pd.DataFrame, cols: Sequence[str]) -> tuple[np.ndarray, list
 
 
 def obs_columns(source: Container, cols: Sequence[str]) -> pd.DataFrame:
-    """Obs columns from any container (AnnData attr vs DatasetCollection reader vs list) — no cell matrices."""
+    """The ``cols`` of ``source``'s obs, without touching any cell matrix.
+
+    A list of AnnData is read as one dataset: their columns are stacked in list order with a fresh positional
+    index, and a column categorical in every file gets the union of their categories, so its codes compare
+    across files.
+    """
     if isinstance(source, list):  # list of AnnData: concatenate obs in list order (= key_backings order)
         frames = [obs_columns(a, cols) for a in source]
         _align_categoricals(frames)
@@ -185,7 +190,7 @@ def _align_categoricals(frames: list[pd.DataFrame]) -> None:
             continue
         union = union_categoricals(series, ignore_order=True).categories
         for f in frames:
-            f.loc[:, col] = f[col].cat.set_categories(union)
+            f[col] = f[col].cat.set_categories(union)  # replace the column; `.loc` cannot change a dtype
 
 
 def _read_obs_cols(obs_group, cols: Sequence[str]) -> pd.DataFrame:
@@ -201,13 +206,14 @@ def _read_obs_cols(obs_group, cols: Sequence[str]) -> pd.DataFrame:
     return pd.DataFrame({c: ad.io.read_elem(obs_group[c]) for c in cols})
 
 
-def load_backed_adata(g, *, keys: Sequence[str], cols: Sequence[str] = ()) -> ad.AnnData:
-    """Open a zarr adata group as a (backed) AnnData, reading only the reps in ``keys`` and obs ``cols``.
+def load_backed_adata(g, *, keys: Sequence[str], cols: Sequence[str] = (), uns: Sequence[str] = ()) -> ad.AnnData:
+    """Open a zarr adata group as a (backed) AnnData, reading only the reps in ``keys``, obs ``cols`` and ``uns``.
 
     Each rep loc (``"X"`` | ``"obsm/<k>"`` | ``"layers/<k>"``) is read straight from the zarr group and
     wrapped backed via :func:`read_backing` (dense array passes through; a sparse group becomes a
     ``CSRDataset``), so nothing is pulled into RAM, and placed at the matching slot so
-    ``get_from_container`` finds it again. ``var`` is reduced to its index and ``obs`` to ``cols``.
+    ``get_from_container`` finds it again. ``var`` is reduced to its index, ``obs`` to ``cols`` and ``uns`` to
+    the ``uns`` keys, which are read into memory (small lookups such as embedding tables).
     """
     var = g["var"]
     obs = _read_obs_cols(g["obs"], cols)
@@ -224,17 +230,20 @@ def load_backed_adata(g, *, keys: Sequence[str], cols: Sequence[str] = ()) -> ad
             continue
         field, sub = key.split("/", 1)  # "obsm/<k>" | "layers/<k>"
         getattr(adata, field)[sub] = read_backing(g[field][sub])
+    for key in uns:
+        adata.uns[key] = ad.io.read_elem(g["uns"][key])
     return adata
 
 
-def open_source(src, *, keys: Sequence[str], cols: Sequence[str] = ()) -> Container:
+def open_source(src, *, keys: Sequence[str], cols: Sequence[str] = (), uns: Sequence[str] = ()) -> Container:
     """Resolve one :class:`~scfit.data.Stream` source value to a :data:`~scfit.data.Container`.
 
     An in-memory ``AnnData`` or ``DatasetCollection`` passes through unchanged. A single path is opened as
     zarr and auto-detected: an annbatch collection root (``encoding-type`` ``"annbatch-preshuffled"``)
     becomes a ``DatasetCollection``; otherwise it is a single adata read backed via :func:`load_backed_adata`.
     A list of paths becomes a list of backed AnnData (the loader feeds one backing per adata to
-    ``add_datasets``). Only the reps in ``keys`` and obs ``cols`` are read (see :func:`load_backed_adata`).
+    ``add_datasets``). Only the reps in ``keys``, obs ``cols`` and ``uns`` keys are read (see
+    :func:`load_backed_adata`).
     """
     import zarr
     from annbatch import DatasetCollection
@@ -246,10 +255,12 @@ def open_source(src, *, keys: Sequence[str], cols: Sequence[str] = ()) -> Contai
         if g.attrs.get("encoding-type") == "annbatch-preshuffled":
             raise NotImplementedError("DatasetCollection support is not yet implemented in open_source.")
             # return DatasetCollection(src, mode="r")
-        return load_backed_adata(g, keys=keys, cols=cols)
+        return load_backed_adata(g, keys=keys, cols=cols, uns=uns)
     # list/sequence of adata zarr paths (or already-open AnnData) → list of backed AnnData
     return [
-        a if isinstance(a, ad.AnnData) else load_backed_adata(zarr.open_group(a, mode="r"), keys=keys, cols=cols)
+        a
+        if isinstance(a, ad.AnnData)
+        else load_backed_adata(zarr.open_group(a, mode="r"), keys=keys, cols=cols, uns=uns)
         for a in src
     ]
 
