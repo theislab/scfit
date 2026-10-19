@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
+- `data.obs_columns` and `data.open_source` are public: obs columns of one AnnData or several read as one dataset, and zarr stores opened backed. `open_source` (and `load_backed_adata`) take `uns=` to read named `.uns` entries
+
+### Fixed
+
+- Several AnnData in one source with different categories in a grouping column no longer fail to load (the categories are unioned)
+
+## [0.0.9] - 2026-10-19
+
+### Added
+
 - `pretrained.save_pretrained` / `load_pretrained`: a spec with its weights as `config.json` plus `<name>/model.safetensors`, in the Hugging Face Hub layout; `load_pretrained` also takes a Hub repo id. torch, safetensors and huggingface-hub are now dependencies
 
 ### Removed
