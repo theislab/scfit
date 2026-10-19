@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+### Changed
+
+- annbatch `>=0.3.1` replaces the `==0.2.1` pin and the shim over it (vendored samplers and a patched `Loader.__iter__`): the primary samples with annbatch's `ClassSampler`, links with a new `BoundClassSampler` built on it, and each batch's group is read from the leaf the loaders carry as obs
+
+## [0.0.9] - 2026-10-19
+
 ### Added
 
 - `pretrained.save_pretrained` / `load_pretrained`: a spec with its weights as `config.json` plus `<name>/model.safetensors`, in the Hugging Face Hub layout; `load_pretrained` also takes a Hub repo id. torch, safetensors and huggingface-hub are now dependencies
