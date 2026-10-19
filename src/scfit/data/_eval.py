@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator, Mapping
 
 import anndata as ad
 import numpy as np
+import torch
 
 from scfit.data._io import _read_rows
 from scfit.data._schema import _PRIMARY, Stream, Weights, validate_links
@@ -106,8 +107,6 @@ class EvalLoader:
         """
         arrays: dict[str, object] = {loc: _read_rows(src.adatas, loc, rows) for loc in reps}
         if self._to == "torch":
-            import torch
-
             arrays = {loc: torch.as_tensor(np.asarray(a)) for loc, a in arrays.items()}
         return arrays
 

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning][].
 [keep a changelog]: https://keepachangelog.com/
 [semantic versioning]: https://semver.org/
 
+## [Unreleased]
+
+### Added
+
+- `pretrained.save_pretrained` / `load_pretrained`: a spec with its weights as `config.json` plus `<name>/model.safetensors`, in the Hugging Face Hub layout; `load_pretrained` also takes a Hub repo id. torch, safetensors and huggingface-hub are now dependencies
+
+### Removed
+
+- Spec versions: a spec is `{"type": type_id, **fields}`, and `@component` takes no `version`/`versions`. Specs written with a `"version"` key no longer load; a saved spec reads back under the package versions that wrote it
+
 ## [0.0.8] - 2026-10-02
 
 ### Added

@@ -18,21 +18,19 @@ class _Widget(Component):
 
 def test_round_trips_through_a_json_spec():
     spec = _Widget(width=5).to_spec()
-    assert spec == {"type": "test.widget", "version": 1, "width": 5}
+    assert spec == {"type": "test.widget", "width": 5}
     assert parse(json.loads(json.dumps(spec))) == _Widget(width=5)
 
 
 @pytest.mark.parametrize(
     ("spec", "match"),
     [
-        ({"type": "test.widget", "version": 1, "nope": 1}, "Extra inputs"),
+        ({"type": "test.widget", "nope": 1}, "Extra inputs"),
         ({"type": "test.nonexistent"}, "Unknown type"),
-        ({"type": "test.widget", "version": 1, "width": "wide"}, "valid integer"),
-        ({"type": "test.widget", "version": 2}, "Unsupported"),
-        ({"type": "test.widget", "version": True}, "Unsupported"),
-        ({"type": ["test.widget"], "version": 1}, "is a string"),
+        ({"type": "test.widget", "width": "wide"}, "valid integer"),
+        ({"type": ["test.widget"]}, "is a string"),
     ],
-    ids=["typo_field", "unknown_type", "bad_value", "bad_version", "bool_version", "list_type"],
+    ids=["typo_field", "unknown_type", "bad_value", "list_type"],
 )
 def test_bad_specs_are_rejected(spec, match):
     with pytest.raises(ValidationError, match=match):
@@ -95,7 +93,6 @@ def test_a_family_field_keeps_each_members_class_and_fields():
     spec = config.to_spec()
     assert spec["by_key"]["a"] == {
         "type": "test.one_hot",
-        "version": 1,
         "categories": ["x"],
     }  # not cut to the base's fields
     assert parse(json.loads(json.dumps(spec))) == config
@@ -108,7 +105,7 @@ def test_a_family_field_needs_a_type():
 
 def test_a_spec_of_the_wrong_family_is_rejected():
     with pytest.raises(ValidationError, match="is not a _Enc"):
-        _Encoders.from_spec({"type": "test.encoders", "version": 1, "one": {"type": "test.widget", "version": 1}})
+        _Encoders.from_spec({"type": "test.encoders", "one": {"type": "test.widget"}})
 
 
 @component("test.node")
@@ -165,12 +162,12 @@ def test_a_member_keeps_its_fields_under_any_pydantic_entry_point():
     assert TypeAdapter(list[_Enc]).dump_python([member])[0]["categories"] == ("x",)
 
 
-def test_type_and_version_are_reserved():
+def test_type_is_reserved():
     with pytest.raises(TypeError, match="reserved"):
 
         @component("test.reserved")
         class _Reserved(Component):
-            version: int = 1
+            type: str = "x"
 
 
 def test_type_ids_are_unique():
@@ -204,13 +201,3 @@ def test_one_config_per_implementation():
         class _Second(Component):
             def build(self) -> _Thing:
                 return _Thing()
-
-
-def test_older_accepted_version_still_loads():
-    @component("test.grown", version=2, versions=(1, 2))
-    class _Grown(Component):
-        width: int = 3
-        height: int = 1
-
-    assert parse({"type": "test.grown", "version": 1, "width": 5}) == _Grown(width=5)
-    assert _Grown().to_spec()["version"] == 2
