@@ -6,14 +6,14 @@ whose cells form one unified categorical universe.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
 import anndata as ad
 import numpy as np
 import pandas as pd
 
-from scfit.data._io import get_from_container, leaf_codes, materialize_node, obs_columns
+from scfit.data._io import get_from_container, has_rep, leaf_codes, materialize_node, obs_columns, rep_placeholder
 
 if TYPE_CHECKING:
     from scfit.data._schema import Container, Stream
@@ -71,21 +71,41 @@ class Source:
             self._leaf_cache[gb] = _Factorized(codes, leaves, cats)
         return self._leaf_cache[gb]
 
-    def rep(self, loc: str) -> list:
+    def rep(self, loc: str, needed: Sequence[bool] | None = None) -> list:
         """The array(s) backing rep ``loc``, one per AnnData in list order — with a shared-width check.
 
-        annbatch stacks a streamed rep into one array, so its ``shape[1]`` must agree across the dataset's
-        files; a mismatch raises here rather than deep inside annbatch.
+        A file may lack the rep when ``needed`` says its rows are never selected (e.g. a target-side rep in the
+        controls' file): it gets a never-read placeholder (:func:`~scfit.data._io.rep_placeholder`), so annbatch
+        still sees one backing per file. A missing rep in a needed file raises. annbatch stacks a streamed rep
+        into one array, so its ``shape[1]`` must agree across the files that carry it; a mismatch raises here
+        rather than deep inside annbatch.
         """
-        backings = get_from_container(self._adatas, loc)
-        widths = {int(b.shape[1]) for b in backings}
+        needed = [True] * len(self._adatas) if needed is None else list(needed)
+        backings = []
+        for i, (a, need) in enumerate(zip(self._adatas, needed, strict=True)):
+            if has_rep(a, loc):
+                backings.append(get_from_container(a, loc)[0])
+            elif not need:
+                backings.append(None)
+            else:
+                raise KeyError(
+                    f"rep {loc!r} is missing from AnnData {i} of this source, and the stream selects rows from it. "
+                    "Add the rep to that file, or give its rows zero weight in this stream."
+                )
+        real = [b for b in backings if b is not None]
+        if not real:
+            raise KeyError(f"rep {loc!r} is in none of this source's AnnData.")
+        widths = {int(b.shape[1]) for b in real}
         if len(widths) > 1:
             raise ValueError(
                 f"rep {loc!r} has inconsistent shape[1] across this source's AnnData ({sorted(widths)}); a "
                 "streamed representation must share its feature dimension across files (align to a common "
                 "space — e.g. a shared obsm embedding or a common gene panel — or use separate source_keys)."
             )
-        return backings
+        return [
+            b if b is not None else rep_placeholder(real[0], a.n_obs)
+            for a, b in zip(self._adatas, backings, strict=True)
+        ]
 
     def materialize(self, stream: Stream) -> Source:
         """A new :class:`Source` holding this stream's selected (positive-weight) cells in RAM.

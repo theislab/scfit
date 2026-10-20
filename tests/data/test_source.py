@@ -14,7 +14,8 @@ import pandas as pd
 import pytest
 from scheme_helpers import KEY, encoded_adata, perturbation_streams
 
-from scfit.data import Loader, Stream
+from scfit.data import Loader, Stream, open_source
+from scfit.data._io import _read_rows
 from scfit.data._source import Source
 
 READ = {"sampler": {"batch_size": 4, "chunk_size": 1, "preload_nchunks": 4}, "to": None}
@@ -60,6 +61,47 @@ def test_shared_obsm_rep_ok_despite_differing_x_width():
     b.obsm["emb"] = np.zeros((b.n_obs, 4), "float32")
     src = Source([a, b])
     assert [x.shape[1] for x in src.rep("obsm/emb")] == [4, 4]  # equal-width rep → no error
+
+
+# ── reps a file may lack ────────────────────────────────────────────────────────────────────────
+def test_streamed_rep_only_in_the_selected_file():
+    # e.g. a target-side rep that only the perturbed file carries: the primary never selects file A's rows.
+    a, b = _file(["T"], file_id=0), _file(["NK"], file_id=1)
+    b.obsm["emb"] = np.full((b.n_obs, 3), 7, "float32")
+    loader = Loader(
+        {KEY: [a, b]},
+        primary=Stream(KEY, group_by=("cell_type",), weights={("NK",): 1.0}, reps=("X", "obsm/emb")),
+        **READ,
+    )
+    for _ in range(4):
+        batch = next(iter(loader))["primary"]
+        assert (np.asarray(batch["X"])[:, 0] == 1).all() and (np.asarray(batch["obsm/emb"]) == 7).all()
+
+
+def test_rep_missing_from_a_selected_file_raises():
+    a, b = _file(["T"], 0), _file(["NK"], 1)
+    b.obsm["emb"] = np.zeros((b.n_obs, 3), "float32")
+    with pytest.raises(KeyError, match="missing from AnnData 0"):
+        Source([a, b]).rep("obsm/emb")
+    assert Source([a, b]).rep("obsm/emb", needed=[False, True])[0].shape == (a.n_obs, 3)
+
+
+def test_read_rows_touches_only_files_with_selected_rows():
+    a, b = _file(["T"], 0), _file(["NK"], 1)
+    a.obsm["emb"] = np.full((a.n_obs, 2), 3, "float32")
+    np.testing.assert_array_equal(_read_rows([a, b], "obsm/emb", np.arange(2, 5)), np.full((3, 2), 3))
+    with pytest.raises(KeyError, match="missing from AnnData 1"):
+        _read_rows([a, b], "obsm/emb", np.array([0, a.n_obs]))
+
+
+def test_backed_placeholder_for_a_file_lacking_the_rep(tmp_path):
+    a, b = _file(["T"], 0), _file(["NK"], 1)
+    b.obsm["emb"] = np.ones((b.n_obs, 3), "float32")
+    a.write_zarr(tmp_path / "a.zarr")
+    b.write_zarr(tmp_path / "b.zarr")
+    src = Source(open_source([tmp_path / "a.zarr", tmp_path / "b.zarr"], keys=["X", "obsm/emb"], cols=["cell_type"]))
+    placeholder, real = src.rep("obsm/emb", needed=[False, True])
+    assert placeholder.shape == (a.n_obs, 3) and type(placeholder) is type(real)
 
 
 # ── shared factorization ────────────────────────────────────────────────────────────────────────

@@ -241,14 +241,17 @@ class Loader:
         # One annbatch Loader per rep; each deepcopies the sampler so the reps stay aligned. Each file carries
         # its rows' leaf as obs, so a batch reports the group it was drawn from (`_LEAF` in its obs).
         src, s, to = self._resolved[name], self._streams[name], self._to
-        cats = self._st[name]["cats"]
+        cats, w = self._st[name]["cats"], self._st[name]["w"]
+        # Files the stream selects rows from; the others may lack a rep (a placeholder stands in, never read).
+        offsets = np.cumsum([0, *(a.n_obs for a in src.adatas)])
+        selected = w[cats.codes] > 0
+        needed = [bool(selected[a:b].any()) for a, b in itertools.pairwise(offsets)]
         loaders: dict[str, AnnbatchLoader] = {}
         for loc in s.reps:
             base = AnnbatchLoader(
                 batch_sampler=deepcopy(sampler), return_index=False, to=to, preload_to_gpu=self._preload_to_gpu
             )
-            backings = src.rep(loc)
-            offsets = np.cumsum([0, *(b.shape[0] for b in backings)])
+            backings = src.rep(loc, needed)
             obs = [
                 pd.DataFrame({_LEAF: cats[a:b]}, index=np.arange(a, b).astype(str))
                 for a, b in itertools.pairwise(offsets)

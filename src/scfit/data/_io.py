@@ -50,6 +50,36 @@ def get_from_container(source: ad.AnnData | list[ad.AnnData], loc: str) -> list[
     return [getattr(source, field)[sub]]
 
 
+def has_rep(adata: ad.AnnData, loc: str) -> bool:
+    """Whether ``adata`` carries rep ``loc`` (``"X"`` | ``"obsm/<k>"`` | ``"layers/<k>"``)."""
+    if loc == "X":
+        return adata.X is not None
+    field, sub = loc.split("/", 1)
+    return sub in getattr(adata, field)
+
+
+def rep_placeholder(template, n_obs: int):
+    """A never-read stand-in for a rep a file lacks: ``n_obs`` rows shaped and typed like ``template``, costing no memory.
+
+    Stands in for a file whose rows a stream never selects, so annbatch still gets one backing per file (its global
+    row indexing spans all of them). Backed templates get an unwritten in-memory zarr array (all fill value) or an
+    empty CSR group; in-memory ones a broadcast zero view or an empty CSR matrix.
+    """
+    import scipy.sparse as sp
+
+    shape, dtype = (n_obs, int(template.shape[1])), template.dtype
+    sparse = isinstance(template, ad.abc.CSRDataset) or sp.issparse(template)
+    if not is_backed_array(template):
+        return sp.csr_matrix(shape, dtype=dtype) if sparse else np.broadcast_to(np.zeros((), dtype=dtype), shape)
+    group = zarr.open_group(zarr.storage.MemoryStore(), mode="w")
+    if sparse:
+        ad.io.write_elem(group, "x", sp.csr_matrix(shape, dtype=dtype))
+        return ad.io.sparse_dataset(group["x"])
+    return group.create_array(
+        "x", shape=shape, chunks=(max(1, min(n_obs, 65_536)), shape[1]), dtype=dtype, fill_value=0
+    )
+
+
 def _read_rows(source: Container, loc: str, row_idx: np.ndarray) -> np.ndarray:
     r"""Densely read the global rows ``row_idx`` (ascending, unique) of rep ``loc`` from a source's backings.
 
@@ -58,17 +88,24 @@ def _read_rows(source: Container, loc: str, row_idx: np.ndarray) -> np.ndarray:
     scattered rows degrade to one slice per row (still correct). Slicing reads uniformly across dense zarr,
     backed ``CSRDataset``\\s and in-memory arrays, so no per-backend indexing branch is needed.
     """
-    backings = get_from_container(source, loc)  # each has ``.shape`` (sparse groups already wrapped by read_backing)
-    offs = np.concatenate([[0], np.cumsum([b.shape[0] for b in backings])]).astype(np.int64)
-    parts = []
-    for d, b in enumerate(backings):
+    adatas = source if isinstance(source, list) else [source]
+    offs = np.concatenate([[0], np.cumsum([a.n_obs for a in adatas])]).astype(np.int64)
+    parts, width = [], None
+    for d, a in enumerate(adatas):
         lb = row_idx[(row_idx >= offs[d]) & (row_idx < offs[d + 1])] - offs[d]  # ascending within this dataset
-        runs = np.split(lb, np.flatnonzero(np.diff(lb) != 1) + 1) if lb.size else ()  # maximal consecutive runs
+        if has_rep(a, loc):
+            width = width if width is not None else int(get_from_container(a, loc)[0].shape[1])
+        if not lb.size:
+            continue  # only files with selected rows need to carry the rep
+        if not has_rep(a, loc):
+            raise KeyError(f"rep {loc!r} is missing from AnnData {d}, which has {lb.size} of the selected rows.")
+        (b,) = get_from_container(a, loc)  # has ``.shape`` (sparse groups already wrapped by read_backing)
+        runs = np.split(lb, np.flatnonzero(np.diff(lb) != 1) + 1)  # maximal consecutive runs
         for run in runs:
             sub = b[int(run[0]) : int(run[-1]) + 1]  # contiguous slice read
             dense = getattr(sub, "todense", None)
             parts.append(np.asarray(dense()) if dense is not None else np.asarray(sub))
-    return np.concatenate(parts, axis=0) if parts else np.empty((0, int(backings[0].shape[1])), dtype=np.float32)
+    return np.concatenate(parts, axis=0) if parts else np.empty((0, width or 0), dtype=np.float32)
 
 
 def materialize_node(
@@ -232,6 +269,8 @@ def load_backed_adata(g, *, keys: Sequence[str], cols: Sequence[str] = (), uns: 
         if key == "X":
             continue
         field, sub = key.split("/", 1)  # "obsm/<k>" | "layers/<k>"
+        if field not in g or sub not in g[field]:
+            continue  # a file may lack a rep its streams never select from; `Source.rep` decides
         getattr(adata, field)[sub] = read_backing(g[field][sub])
     for key in uns:
         adata.uns[key] = ad.io.read_elem(g["uns"][key])
