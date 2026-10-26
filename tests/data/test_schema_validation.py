@@ -81,12 +81,14 @@ def test_source_key_not_in_sources_raises():
 
 
 # ── Loader: cross-stream guards ────────────────────────────────────────────────────────────────────────
-def test_reserved_primary_link_name():
+@pytest.mark.parametrize("name", ["primary", "leaves", "leaf", "rows"])
+def test_reserved_link_names(name: str):
+    """A link named like a batch key would overwrite it."""
     with pytest.raises(ValueError, match="reserved"):
         Loader(
             SRC,
             primary=Stream(KEY, group_by=COLS, weights=W),
-            links={"primary": Stream(KEY, group_by=COLS, weights=W, match_on=("cell_line",))},
+            links={name: Stream(KEY, group_by=COLS, weights=W, match_on=("cell_line",))},
             sampler=SAMPLER,
         )
 

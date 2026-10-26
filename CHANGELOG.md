@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+### Added
+
+- `batch["rows"]`: `Loader` and `EvalLoader` batches name the global rows each stream read (`{stream: int64 rows}`, the source's files concatenated in order), aligned with its reps
+
+### Changed
+
+- Link names `leaves`, `leaf` and `rows` are reserved, like `primary`
+
 ## [0.0.11] - 2026-10-19
 
 ### Added

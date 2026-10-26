@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from scfit.data._io import _read_rows
-from scfit.data._schema import _PRIMARY, Stream, Weights, validate_links
+from scfit.data._schema import _LEAF, _PRIMARY, _ROWS, Stream, Weights, validate_links
 from scfit.data._source import Source, build_sources, resolve_source
 
 __all__ = ["EvalLoader"]
@@ -112,18 +112,24 @@ class EvalLoader:
 
     # ── iteration ──────────────────────────────────────────────────────────
     def __iter__(self) -> Iterator[dict]:
-        """Yield one batch per primary leaf: ``{"primary": {loc: rows}, <link>: {...}, "leaf": <tuple>}``."""
+        """Yield one batch per primary leaf: ``{"primary": {loc: rows}, <link>: {...}, "leaf": <tuple>, "rows": {...}}``.
+
+        ``rows`` maps each stream to the int64 global rows it read (its source's files concatenated in order).
+        """
         p_pos = {c: i for i, c in enumerate(self._primary.group_by)}
         rng = np.random.default_rng(self._seed)  # reset each pass -> reproducible subsamples for a fixed seed
         for code, leaf in enumerate(self._pf.leaves):
             if self._wanted is not None and leaf not in self._wanted:
                 continue
             rows = self._cap(np.flatnonzero(self._pf.codes == code), rng)
-            out: dict[str, object] = {_PRIMARY: self._read(self._psrc, self._primary.reps, rows), "leaf": leaf}
+            out: dict[str, object] = {_PRIMARY: self._read(self._psrc, self._primary.reps, rows), _LEAF: leaf}
+            out_rows = {_PRIMARY: rows}
             for name, link in self._links.items():
                 match_vals = tuple(leaf[p_pos[c]] for c in link.match_on)  # primary leaf's match_on values
                 lrows = self._cap(self._lrows[name].get(match_vals, np.empty(0, dtype=int)), rng)
                 out[name] = self._read(self._lsrc[name], link.reps, lrows)
+                out_rows[name] = lrows
+            out[_ROWS] = out_rows  # the global rows each stream read, as for Loader
             yield out
 
     def __len__(self) -> int:

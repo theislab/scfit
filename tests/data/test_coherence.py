@@ -104,7 +104,7 @@ def test_multiple_links_are_keyed_by_name():
     )
     b = next(iter(loader))
     streams = {"primary", "on_line", "on_drug"}
-    assert set(b) == streams | {"leaves"}  # every stream present, keyed by name (no clobber)
+    assert set(b) == streams | {"leaves", "rows"}  # every stream present, keyed by name (no clobber)
     assert set(b["leaves"]) == streams  # and each reports the group it drew
     tgt = rep(b, "primary")
     assert (rep(b, "on_line")[:, 0] == tgt[0, 0]).all()  # on_line matched on the line column

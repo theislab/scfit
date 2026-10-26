@@ -20,6 +20,12 @@ __all__ = ["Container", "SamplerParams", "Stream", "Weights", "weight_vector"]
 
 # Reserved name of the root / target (primary) stream — shared by Loader and EvalLoader.
 _PRIMARY = "primary"
+# Batch keys beside the streams: the group drawn (``Loader``: per stream; ``EvalLoader``: the primary's) and
+# the global rows each stream read.
+_LEAVES = "leaves"
+_LEAF = "leaf"
+_ROWS = "rows"
+_RESERVED = (_PRIMARY, _LEAVES, _LEAF, _ROWS)
 
 
 class SamplerParams(BaseModel):
@@ -136,8 +142,9 @@ def validate_links(primary: Stream, links: Mapping[str, Stream]) -> None:
 
     Shared by :class:`~scfit.data.Loader` and :class:`~scfit.data.EvalLoader`.
     """
-    if _PRIMARY in links:
-        raise ValueError(f"link name {_PRIMARY!r} is reserved for the primary stream.")
+    clash = set(_RESERVED) & set(links)
+    if clash:
+        raise ValueError(f"link name(s) {sorted(clash)} are reserved batch keys {list(_RESERVED)}.")
     for name, link in links.items():
         shared = set(primary.group_by) & set(link.group_by)
         if not set(link.match_on) <= shared:

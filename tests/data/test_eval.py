@@ -46,6 +46,7 @@ def test_full_pass_is_deterministic_and_matched():
         ctrl = np.flatnonzero((obs.cell_line == cl) & (obs.drug == "control"))
         assert np.array_equal(batch["primary"]["X"], adata.X[pert])
         assert np.array_equal(batch["control"]["X"], adata.X[ctrl])  # matched, controls-only
+        assert np.array_equal(batch["rows"]["primary"], pert) and np.array_equal(batch["rows"]["control"], ctrl)
     assert set(seen) == {(cl, dr) for cl in CELL_LINES for dr in ("d1", "d2")}
 
 

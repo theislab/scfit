@@ -43,3 +43,17 @@ def test_eval_walks_the_one_group():
     batches = list(loader)
     assert len(batches) == 1 and batches[0]["leaf"] == ()
     assert sorted(np.asarray(batches[0]["primary"]["X"])[:, 0].astype(int).tolist()) == list(range(6))
+
+
+def test_rows_name_the_cells_each_stream_read():
+    """``batch["rows"]`` is each stream's global rows, files concatenated in order, aligned with its reps."""
+    loader = Loader(
+        {"d": [_adata(0, 8), _adata(8, 8)], "ctrl": _adata(100, 8)},
+        primary=Stream("d", group_by=()),
+        links={"ctrl": Stream("ctrl", group_by=())},
+        sampler={"batch_size": 4, "chunk_size": 2, "preload_nchunks": 2},
+    )
+    for batch in (next(loader) for _ in range(10)):
+        assert batch["rows"]["primary"].dtype == np.int64
+        np.testing.assert_array_equal(np.asarray(batch["primary"]["X"])[:, 0], batch["rows"]["primary"])
+        np.testing.assert_array_equal(np.asarray(batch["ctrl"]["X"])[:, 0], batch["rows"]["ctrl"] + 100)
