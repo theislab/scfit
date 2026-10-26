@@ -20,24 +20,27 @@ from annbatch.samplers import ClassSampler
 from scfit.data._bound_sampler import BoundClassSampler
 from scfit.data._io import is_backed_array, open_source
 from scfit.data._schema import (
+    _LEAVES,
     _PRIMARY,
+    _ROWS,
     SamplerParams,
     Stream,
     validate_links,
     weight_vector,
 )
-from scfit.data._source import Source, build_sources, resolve_source
+from scfit.data._source import Source, _Factorized, build_sources, resolve_source
 
 __all__ = ["Loader"]
 
-_LEAF = "leaf"  # the obs column each per-rep annbatch loader carries: every row's group_by tuple
+_ROW = "row"  # the obs column each per-rep annbatch loader carries: every row's global row number
 
 
 class Loader:
     """An infinite stream of matched batches — the primary plus its links, keyed by stream name.
 
     A batch is ``{stream name: {rep loc: rows}}`` for the primary and every link, plus ``"leaves"``
-    (``{stream name: <group_by tuple>}`` — the group each stream drew). Side arrays keyed by group (a
+    (``{stream name: <group_by tuple>}`` — the group each stream drew) and ``"rows"`` (``{stream name:
+    <int64 global rows>}``, aligned with the reps; a row indexes the source's files concatenated in order). Side arrays keyed by group (a
     perturbation encoding, a dose vector) are the *consumer's*: index them with that leaf.
 
     A fresh epoch rolls each pass; :meth:`set_n_iters` only inserts a pause point, it never restarts.
@@ -112,18 +115,19 @@ class Loader:
         # weights / leaves from obs alone — no cell matrices. Sources sharing a key factorize once.
         self._union_cache: dict[tuple[str, ...], Source] = {}
         self._resolved: dict[str, Source] = {}
-        self._st: dict[str, dict] = {}
+        self._f: dict[str, _Factorized] = {}
+        self._w: dict[str, np.ndarray] = {}
         for name, s in self._streams.items():
             base = resolve_source(self._sources, s, self._union_cache)
             src = base.materialize(s) if s.in_memory else base
-            f = src.factorize(s.group_by)
             self._resolved[name] = src
-            self._st[name] = {"leaves": f.leaves, "w": weight_vector(s.weights, f.leaves), "cats": f.cats}
+            self._f[name] = f = src.factorize(s.group_by)
+            self._w[name] = weight_vector(s.weights, f.leaves)
 
         # Epoch length: primary rows // its batch_size. The underlying stream is *always* infinite — it rolls
         # a fresh epoch of this length each pass — and ``n_iters`` never touches the samplers, so the schedule
         # is independent of any cap.
-        n_root_obs = len(self._st[_PRIMARY]["cats"])
+        n_root_obs = len(self._f[_PRIMARY].codes)
         self.n_batches = self._pass_len = max(1, n_root_obs // self._root_batch_size)
         self.n_iters: int | None = None
 
@@ -207,9 +211,9 @@ class Loader:
                 chunk_size=cfg.chunk_size,
                 preload_nchunks=cfg.preload_nchunks,
                 batch_size=cfg.batch_size,
-                classes=self._st[name]["cats"],
+                classes=self._f[name].cats,
                 num_samples=self._pass_len * cfg.batch_size,
-                class_weights=self._st[name]["w"],
+                class_weights=self._w[name],
                 drop_last=True,
                 rng=deepcopy(self._rngs[name]),
             )
@@ -219,7 +223,7 @@ class Loader:
     def _new_bound_sampler(self, name: str) -> BoundClassSampler:
         # Inner = a deepcopy of the oracle (same per-batch schedule). Bind on the shared ``match_on`` columns;
         # the link's own weights (0 = excluded) pick which of its leaves is drawn within each matched context.
-        cfg, cats = self._cfg[name], self._st[name]["cats"]
+        cfg, cats = self._cfg[name], self._f[name].cats
         primary, link = self._streams[_PRIMARY], self._streams[name]
         try:
             return BoundClassSampler(
@@ -227,11 +231,11 @@ class Loader:
                 cfg.chunk_size,
                 cfg.preload_nchunks,
                 cfg.batch_size,
-                inner_classes=self._st[_PRIMARY]["cats"],
+                inner_classes=self._f[_PRIMARY].cats,
                 classes=cats,
                 # primary tuple position → link tuple position, per shared ``match_on`` column
                 on={primary.group_by.index(c): link.group_by.index(c) for c in link.match_on},
-                class_weights=self._st[name]["w"],
+                class_weights=self._w[name],
                 rng=deepcopy(self._rngs[name]),
             )
         except ValueError as e:
@@ -239,9 +243,8 @@ class Loader:
 
     def _build_per_rep_loaders(self, name: str, sampler: ClassSampler | BoundClassSampler) -> dict[str, AnnbatchLoader]:
         # One annbatch Loader per rep; each deepcopies the sampler so the reps stay aligned. Each file carries
-        # its rows' leaf as obs, so a batch reports the group it was drawn from (`_LEAF` in its obs).
+        # its global row numbers as obs (`_ROW`), so a batch reports the rows it read, and through `codes` its group.
         src, s, to = self._resolved[name], self._streams[name], self._to
-        cats = self._st[name]["cats"]
         loaders: dict[str, AnnbatchLoader] = {}
         for loc in s.reps:
             base = AnnbatchLoader(
@@ -250,7 +253,7 @@ class Loader:
             backings = src.rep(loc)
             offsets = np.cumsum([0, *(b.shape[0] for b in backings)])
             obs = [
-                pd.DataFrame({_LEAF: cats[a:b]}, index=np.arange(a, b).astype(str))
+                pd.DataFrame({_ROW: np.arange(a, b, dtype=np.int64)}, index=np.arange(a, b).astype(str))
                 for a, b in itertools.pairwise(offsets)
             ]
             # in-memory arrays → add_adatas (X wrapper); backed (zarr / CSRDataset) → add_datasets
@@ -282,16 +285,18 @@ class Loader:
     # ponytail: no __len__ — the loader is an infinite stream that ``n_iters`` merely pauses, and a len()
     # that raises half the time is worse than none. Read ``n_iters`` / ``n_batches`` directly if you need a count.
 
-    def _stream_next(self, name: str) -> tuple[dict, object]:
-        """A stream's aligned reps ``{rep loc: rows}`` plus its per-batch ``label`` (category label).
+    def _stream_next(self, name: str) -> tuple[dict, np.ndarray, tuple]:
+        """A stream's aligned reps ``{rep loc: rows}``, its global ``rows`` and the ``leaf`` it drew.
 
-        Identical samplers pick the same aligned rows for every rep, and share one ``label`` per batch.
+        Identical samplers pick the same aligned rows for every rep. A batch is one class, so its first row's
+        leaf code is the batch's leaf.
         """
-        reps, label = {}, None
+        reps, rows = {}, None
         for loc in self._streams[name].reps:
             batch = next(self._iters[name][loc])
-            reps[loc], label = batch["X"], batch["obs"][_LEAF].iloc[0]
-        return reps, label
+            reps[loc], rows = batch["X"], batch["obs"][_ROW].to_numpy()
+        f = self._f[name]
+        return reps, rows, f.leaves[f.codes[rows[0]]]
 
     def __next__(self) -> dict[str, dict]:
         if self.n_iters is not None and self._since_pause >= self.n_iters:
@@ -311,8 +316,9 @@ class Loader:
         # One entry per streamed stream, keyed by name: the primary is the target, each link a source.
         out: dict = {}
         leaves: dict = {}
+        rows: dict = {}
         for name in (_PRIMARY, *self._links):
-            out[name], label = self._stream_next(name)
-            leaves[name] = tuple(label)  # the stream's own group_by tuple
-        out["leaves"] = leaves  # the group each stream drew this batch — index your own encodings with it
+            out[name], rows[name], leaves[name] = self._stream_next(name)  # leaf: the stream's group_by tuple
+        out[_LEAVES] = leaves  # the group each stream drew this batch — index your own encodings with it
+        out[_ROWS] = rows  # the global rows each stream read, aligned with its reps
         return out
