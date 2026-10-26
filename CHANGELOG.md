@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+### Changed
+
+- The `cuda12` extra is replaced by `cupy-cuda12` and `cupy-cuda13`, which install annbatch's extras of the same name (cupy with its CUDA toolkit wheels); pick the one matching your CUDA major
+
 ## [0.0.12] - 2026-10-26
 
 ### Added

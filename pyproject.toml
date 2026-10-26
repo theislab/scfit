@@ -43,10 +43,13 @@ dependencies = [
   "zarrs>=0.2.1",
 ]
 # GPU-resident streaming: annbatch can keep its read window on-device via cupy (preload_to_gpu) so batches
-# arrive as GPU tensors with no per-step host->device copy. Linux/CUDA only; optional at runtime.
-# CUDA 12.x only (cupy-cuda12x); add a `cuda11` extra with cupy-cuda11x if an 11.x wheel is ever needed.
-optional-dependencies.cuda12 = [
-  "cupy-cuda12x; sys_platform=='linux'",
+# arrive as GPU tensors with no per-step host->device copy. One extra per CUDA major, matching your driver
+# and torch build; annbatch's extras pull cupy with its CUDA toolkit wheels, so no system CUDA is needed.
+optional-dependencies.cupy-cuda12 = [
+  "annbatch[cupy-cuda12]",
+]
+optional-dependencies.cupy-cuda13 = [
+  "annbatch[cupy-cuda13]",
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://scfit.readthedocs.io/"
