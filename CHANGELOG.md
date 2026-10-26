@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-10-26
+
 ### Added
 
 - `batch["rows"]`: `Loader` and `EvalLoader` batches name the global rows each stream read (`{stream: int64 rows}`, the source's files concatenated in order), aligned with its reps
