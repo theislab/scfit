@@ -6,8 +6,18 @@ output by stream name and expose no row indices.
 """
 
 from scfit.data._eval import EvalLoader
-from scfit.data._io import obs_columns, open_source
+from scfit.data._io import loc_of, obs_columns, open_adata, open_source, read_rows
 from scfit.data._loader import Loader
 from scfit.data._schema import SamplerParams, Stream
 
-__all__ = ["EvalLoader", "Loader", "SamplerParams", "Stream", "obs_columns", "open_source"]
+__all__ = [
+    "EvalLoader",
+    "Loader",
+    "SamplerParams",
+    "Stream",
+    "loc_of",
+    "obs_columns",
+    "open_adata",
+    "open_source",
+    "read_rows",
+]

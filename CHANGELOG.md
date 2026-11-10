@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+### Added
+
+- `scfit.data.open_adata(path, *refs, uns=...)` opens a `.zarr` or `.h5ad` store with exactly the parts the `anndata.acc` references name: `A.X`, `A.layers[k]`, `A.obsm[k]` (arrays, on disk for zarr), `A.obs[col]` and `A.obs.index`. A `.h5ad` file's arrays are read into memory and the file is closed
+- `scfit.data.read_rows(array, rows)` reads all rows, a slice, a mask or positions of an on-disk array as dense numpy
+- `scfit.data.loc_of(ref)` maps an `anndata.acc` reference to its rep loc (`"X"`, `"layers/<k>"`, `"obsm/<k>"`)
+
+### Changed
+
+- `open_source` also opens `.h5ad` paths, reading only the named parts
+- `load_backed_adata`, `open_adata` and `open_source` raise one `KeyError` naming every missing rep, obs column and uns key, with what the store has, instead of failing on the first lookup
+
 ## [0.0.13] - 2026-10-26
 
 ### Changed
