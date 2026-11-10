@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import anndata as ad
 import numpy as np
+from anndata.acc import A
 
 from scfit.data import EvalLoader, Loader, Stream
 
@@ -22,7 +23,7 @@ def test_training_streams_every_cell_of_every_file_as_one_group():
     seen = set()
     for batch in (next(loader) for _ in range(40)):
         assert batch["leaves"]["primary"] == ()
-        seen |= set(np.asarray(batch["primary"]["X"])[:, 0].astype(int).tolist())
+        seen |= set(np.asarray(batch["primary"][A.X])[:, 0].astype(int).tolist())
     assert seen == set(range(16))
 
 
@@ -35,14 +36,14 @@ def test_an_ungrouped_link_draws_from_every_cell_in_memory():
     )
     batch = next(loader)
     assert batch["leaves"]["ctrl"] == ()
-    assert (np.asarray(batch["ctrl"]["X"]) >= 100).all()
+    assert (np.asarray(batch["ctrl"][A.X]) >= 100).all()
 
 
 def test_eval_walks_the_one_group():
     loader = EvalLoader({"d": _adata(0, 6)}, primary=Stream("d", group_by=()))
     batches = list(loader)
     assert len(batches) == 1 and batches[0]["leaf"] == ()
-    assert sorted(np.asarray(batches[0]["primary"]["X"])[:, 0].astype(int).tolist()) == list(range(6))
+    assert sorted(np.asarray(batches[0]["primary"][A.X])[:, 0].astype(int).tolist()) == list(range(6))
 
 
 def test_rows_name_the_cells_each_stream_read():
@@ -55,5 +56,5 @@ def test_rows_name_the_cells_each_stream_read():
     )
     for batch in (next(loader) for _ in range(10)):
         assert batch["rows"]["primary"].dtype == np.int64
-        np.testing.assert_array_equal(np.asarray(batch["primary"]["X"])[:, 0], batch["rows"]["primary"])
-        np.testing.assert_array_equal(np.asarray(batch["ctrl"]["X"])[:, 0], batch["rows"]["ctrl"] + 100)
+        np.testing.assert_array_equal(np.asarray(batch["primary"][A.X])[:, 0], batch["rows"]["primary"])
+        np.testing.assert_array_equal(np.asarray(batch["ctrl"][A.X])[:, 0], batch["rows"]["ctrl"] + 100)

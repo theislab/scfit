@@ -8,6 +8,7 @@ match_on ⊆ shared, in_memory ⇒ chunk_size=1) and the per-batch leaves.
 from __future__ import annotations
 
 import pytest
+from anndata.acc import A
 from scheme_helpers import KEY, encoded_adata, uniform
 
 from scfit.data import Loader, Stream
@@ -21,8 +22,9 @@ SAMPLER = {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
 
 # ── Stream: shape guards (no Loader built) ───────────────────────────────────────────────────────────
 def test_rep_normalizes_to_tuple():
-    assert Stream("k", group_by=COLS, reps="X").reps == ("X",)  # a bare loc string becomes a 1-tuple
-    assert Stream("k", group_by=COLS, reps=("X", "obsm/rep")).reps == ("X", "obsm/rep")
+    assert Stream("k", group_by=COLS).reps == (A.X,)  # default
+    assert Stream("k", group_by=COLS, reps=A.obsm["rep"]).reps == (A.obsm["rep"],)  # a bare reference: a 1-tuple
+    assert Stream("k", group_by=COLS, reps=[A.X, A.layers["l"]]).reps == (A.X, A.layers["l"])
     assert Stream("k", group_by=COLS, reps=()).reps == ()  # metadata-only (EvalLoader)
 
 
@@ -39,9 +41,19 @@ def test_source_key_must_be_non_empty_string():
 @pytest.mark.parametrize(
     ("kw", "exc", "msg"),
     [
-        pytest.param({"group_by": COLS, "reps": 123}, ValueError, "loc strings", id="non_string_rep"),
-        pytest.param({"group_by": COLS, "reps": ""}, ValueError, "loc strings", id="empty_rep"),
-        pytest.param({"group_by": COLS, "reps": ("X", "")}, ValueError, "loc strings", id="one_empty_rep"),
+        pytest.param({"group_by": COLS, "reps": 123}, ValueError, r"not A\.X", id="non_ref_rep"),
+        pytest.param({"group_by": COLS, "reps": "X"}, ValueError, r"not strings.*anndata\.acc\.A", id="string_rep"),
+        pytest.param(
+            {"group_by": COLS, "reps": (A.X, "obsm/X_pca")},
+            ValueError,
+            r'A\.obsm\["X_pca"\].*A\.resolve\("obsm\.X_pca", vec=False\)',
+            id="one_string_rep",
+        ),
+        pytest.param(
+            {"group_by": COLS, "reps": A.obsm["p"][:, 0]}, ValueError, "not a whole array", id="ref_into_array"
+        ),
+        pytest.param({"group_by": COLS, "reps": A.varm["v"]}, ValueError, r"not A\.X", id="varm_rep"),
+        pytest.param({"group_by": COLS, "reps": A.obs["c"]}, ValueError, "not a whole array", id="obs_column_rep"),
         pytest.param({"group_by": COLS, "weights": {("A",): 1.0}}, ValueError, "arity", id="weight_arity"),
         pytest.param({"group_by": COLS, "weights": {("A", "d1"): -1.0}}, ValueError, "non-negative", id="neg_weight"),
     ],
@@ -62,7 +74,7 @@ def test_stream_sampler_overrides_loader():
         seed=0,
     )
     assert ld._cfg["primary"].batch_size == 4
-    assert next(iter(ld))["primary"]["X"].shape[0] == 4  # and it really yields 4-row batches
+    assert next(iter(ld))["primary"][A.X].shape[0] == 4  # and it really yields 4-row batches
 
 
 def test_stream_inherits_loader_sampler():

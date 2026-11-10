@@ -16,7 +16,7 @@ import pandas as pd
 from scfit.data._io import get_from_container, leaf_codes, materialize_node, obs_columns
 
 if TYPE_CHECKING:
-    from scfit.data._schema import Container, Stream
+    from scfit.data._schema import Container, Rep, Stream
 
 __all__ = ["Source", "build_sources", "resolve_source"]
 
@@ -71,17 +71,17 @@ class Source:
             self._leaf_cache[gb] = _Factorized(codes, leaves, cats)
         return self._leaf_cache[gb]
 
-    def rep(self, loc: str) -> list:
-        """The array(s) backing rep ``loc``, one per AnnData in list order — with a shared-width check.
+    def rep(self, ref: Rep) -> list:
+        """The array(s) backing rep ``ref`` (an :mod:`anndata.acc` reference), one per AnnData in list order — with a shared-width check.
 
         annbatch stacks a streamed rep into one array, so its ``shape[1]`` must agree across the dataset's
         files; a mismatch raises here rather than deep inside annbatch.
         """
-        backings = get_from_container(self._adatas, loc)
+        backings = get_from_container(self._adatas, ref)
         widths = {int(b.shape[1]) for b in backings}
         if len(widths) > 1:
             raise ValueError(
-                f"rep {loc!r} has inconsistent shape[1] across this source's AnnData ({sorted(widths)}); a "
+                f"rep {ref!r} has inconsistent shape[1] across this source's AnnData ({sorted(widths)}); a "
                 "streamed representation must share its feature dimension across files (align to a common "
                 "space — e.g. a shared obsm embedding or a common gene panel — or use separate source_keys)."
             )

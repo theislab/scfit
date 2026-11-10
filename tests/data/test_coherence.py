@@ -11,6 +11,7 @@ from __future__ import annotations
 import anndata as ad
 import numpy as np
 import pandas as pd
+from anndata.acc import A
 from scheme_helpers import (
     CONTROL,
     DRUGS,
@@ -52,34 +53,34 @@ def test_primary_label_and_context_coherent():
 
 
 def test_reps_from_distinct_stores_are_the_same_cells():
-    # obsm/rep is a DISTINCT payload (not a copy of X) still carrying each cell's ROW_ID, so we can prove
-    # the "obsm/rep" loader reads its own array AND draws the same cells, in the same order, as "X".
+    # obsm["rep"] is a DISTINCT payload (not a copy of X) still carrying each cell's ROW_ID, so we can prove
+    # the A.obsm["rep"] loader reads its own array AND draws the same cells, in the same order, as "X".
     adata = encoded_adata(LINES, DRUGS, 16)
     rid = adata.X[:, ROW_ID]
     adata.obsm["rep"] = np.stack([rid, -rid], axis=1).astype("float32")
-    loader = perturbation_loader(adata, rep=("X", "obsm/rep"), ctrl_rep="X")
+    loader = perturbation_loader(adata, rep=(A.X, A.obsm["rep"]), ctrl_rep=A.X)
     for _ in range(loader.n_batches):
         reps = next(iter(loader))["primary"]
-        x, r = np.asarray(reps["X"]), np.asarray(reps["obsm/rep"])
+        x, r = np.asarray(reps[A.X]), np.asarray(reps[A.obsm["rep"]])
         np.testing.assert_array_equal(r[:, 0], x[:, ROW_ID])  # same cell per position (row-for-row)
-        np.testing.assert_array_equal(r[:, 1], -x[:, ROW_ID])  # and it really is obsm/rep, not X again
+        np.testing.assert_array_equal(r[:, 1], -x[:, ROW_ID])  # and it really is obsm["rep"], not X again
 
 
 def test_source_reps_are_aligned_same_cells():
     # aligned reps apply to the control link too — its reps read the same control cells.
-    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16, obsm_rep=True), rep="X", ctrl_rep=("X", "obsm/rep"))
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16, obsm_rep=True), rep=A.X, ctrl_rep=(A.X, A.obsm["rep"]))
     reps = next(iter(loader))["ctrl"]
-    np.testing.assert_array_equal(np.asarray(reps["X"])[:, ROW_ID], np.asarray(reps["obsm/rep"])[:, ROW_ID])
+    np.testing.assert_array_equal(np.asarray(reps[A.X])[:, ROW_ID], np.asarray(reps[A.obsm["rep"]])[:, ROW_ID])
 
 
 def test_more_than_two_reps_all_aligned():
     adata = encoded_adata(LINES, DRUGS, 16, obsm_rep=True)  # adds obsm["rep"]
     adata.obsm["rep2"] = adata.X.copy()
-    loader = perturbation_loader(adata, rep=("X", "obsm/rep", "obsm/rep2"), ctrl_rep="X")
+    loader = perturbation_loader(adata, rep=(A.X, A.obsm["rep"], A.obsm["rep2"]), ctrl_rep=A.X)
     reps = next(iter(loader))["primary"]
-    x = np.asarray(reps["X"])[:, ROW_ID]
-    np.testing.assert_array_equal(np.asarray(reps["obsm/rep"])[:, ROW_ID], x)
-    np.testing.assert_array_equal(np.asarray(reps["obsm/rep2"])[:, ROW_ID], x)
+    x = np.asarray(reps[A.X])[:, ROW_ID]
+    np.testing.assert_array_equal(np.asarray(reps[A.obsm["rep"]])[:, ROW_ID], x)
+    np.testing.assert_array_equal(np.asarray(reps[A.obsm["rep2"]])[:, ROW_ID], x)
 
 
 def test_multiple_links_are_keyed_by_name():

@@ -14,9 +14,11 @@ from itertools import islice
 import anndata as ad
 import numpy as np
 import pandas as pd
+from anndata.acc import A
 
 from scfit.data import Loader, Stream
 from scfit.data._io import obs_columns
+from scfit.data._schema import Rep
 
 LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2", "d3")
@@ -124,8 +126,8 @@ def perturbation_streams(
     context: Sequence[str] = ("cell_line",),
     perturbation: Sequence[str] = ("drug",),
     control_values: Mapping[str, object] | None = None,
-    rep: str | Sequence[str] = "X",
-    ctrl_rep: str | Sequence[str] | None = None,
+    rep: Rep | Sequence[Rep] = A.X,
+    ctrl_rep: Rep | Sequence[Rep] | None = None,
     ctrl_in_memory: bool = False,
     ctrl_match_on: Sequence[str] | None = None,
 ) -> tuple[Stream, dict[str, Stream]]:
@@ -179,10 +181,10 @@ def perturbation_loader(
     )
 
 
-# ── batch-reading helpers (the read side; they hide the {stream: {rep loc: rows}} batch schema) ──────────
+# ── batch-reading helpers (the read side; they hide the {stream: {rep: rows}} batch schema) ──────────
 
 
-def rep(batch, stream: str, key: str = "X") -> np.ndarray:
+def rep(batch, stream: str, key: Rep = A.X) -> np.ndarray:
     """Rows of one rep of a stream's batch — ``batch[stream][key]`` as a dense ndarray."""
     return np.asarray(batch[stream][key])
 

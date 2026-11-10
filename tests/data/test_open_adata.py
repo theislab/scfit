@@ -4,12 +4,17 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
-import zarr
 from anndata.acc import A
 from scipy import sparse
 
-from scfit.data import loc_of, open_adata, open_source, read_rows
-from scfit.data._io import is_backed_array, load_backed_adata
+from scfit.data import open_adata, open_source
+from scfit.data._io import is_backed_array
+
+
+def dense(array) -> np.ndarray:
+    """An on-disk or in-memory array as dense numpy."""
+    out = array.to_memory() if hasattr(array, "to_memory") else array[...]
+    return np.asarray(out.toarray() if sparse.issparse(out) else out)
 
 
 @pytest.fixture
@@ -41,8 +46,8 @@ def test_reads_only_the_referenced_parts(store: Path, adata: ad.AnnData):
     assert list(opened.var_names) == list(adata.var_names)
     assert list(opened.obs_names) == [str(i) for i in range(6)]  # no index asked for: a RangeIndex
     np.testing.assert_array_equal(opened.obs["group"], adata.obs["group"])
-    np.testing.assert_allclose(read_rows(opened.X), adata.X)
-    np.testing.assert_allclose(read_rows(opened.layers["counts"]), adata.layers["counts"].toarray())
+    np.testing.assert_allclose(dense(opened.X), adata.X)
+    np.testing.assert_allclose(dense(opened.layers["counts"]), adata.layers["counts"].toarray())
 
 
 def test_zarr_arrays_stay_on_disk_h5ad_arrays_are_loaded(store: Path):
@@ -58,7 +63,7 @@ def test_index_on_request(store: Path, adata: ad.AnnData):
 
 def test_a_reference_into_an_array_opens_the_array(store: Path, adata: ad.AnnData):
     opened = open_adata(store, A.obsm["emb"][:, 0])
-    np.testing.assert_allclose(read_rows(opened.obsm["emb"]), adata.obsm["emb"])
+    np.testing.assert_allclose(dense(opened.obsm["emb"]), adata.obsm["emb"])
 
 
 def test_missing_parts_name_what_the_store_has(store: Path):
@@ -71,26 +76,13 @@ def test_var_references_are_refused(store: Path):
         open_adata(store, A.var["x"])
 
 
-def test_read_rows_keeps_the_requested_order(store: Path, adata: ad.AnnData):
-    opened = open_adata(store, A.X, A.layers["counts"])
-    np.testing.assert_allclose(read_rows(opened.X, [4, 1, 3]), adata.X[[4, 1, 3]])
-    np.testing.assert_allclose(read_rows(opened.layers["counts"], [4, 1]), adata.layers["counts"][[4, 1]].toarray())
-    mask = (adata.obs["group"] == "b").to_numpy()
-    np.testing.assert_allclose(read_rows(opened.X, mask), adata.X[mask])
-
-
-def test_loc_of_maps_references_to_rep_locs():
-    assert loc_of(A.X) == "X" and loc_of(A.layers["counts"]) == "layers/counts"
-    assert loc_of(A.obsm["emb"]) == "obsm/emb" and loc_of(A.obsm["emb"][:, 1]) == "obsm/emb"
-
-
 def test_open_source_reads_h5ad_paths(store: Path, adata: ad.AnnData):
-    (opened,) = open_source([store], keys=["obsm/emb"], cols=["group"], uns=["table"])
-    np.testing.assert_allclose(read_rows(opened.obsm["emb"]), adata.obsm["emb"])
+    (opened,) = open_source([store], A.obsm["emb"], A.obs["group"], uns=["table"])
+    np.testing.assert_allclose(dense(opened.obsm["emb"]), adata.obsm["emb"])
     assert list(opened.obs.columns) == ["group"] and list(opened.uns) == ["table"]
 
 
-def test_load_backed_adata_names_missing_parts(adata: ad.AnnData, tmp_path: Path):
+def test_open_source_names_missing_parts(adata: ad.AnnData, tmp_path: Path):
     adata.write_zarr(tmp_path / "d.zarr")
     with pytest.raises(KeyError, match=r"obsm\['nope'\]"):
-        load_backed_adata(zarr.open_group(tmp_path / "d.zarr", mode="r"), keys=["obsm/nope"])
+        open_source(tmp_path / "d.zarr", A.obsm["nope"])
