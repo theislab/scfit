@@ -69,9 +69,9 @@ def test_link_label_follows_weights_within_context():
         seed=0,
     )
     drug_when_a = Counter(
-        only_leaf(rep(b, "src"))[1]  # the source drug code...
+        only_leaf(rep(b, "src", A.X))[1]  # the source drug code...
         for b in islice(loader, 6000)
-        if only_leaf(rep(b, "primary"))[0] == 0  # ...on batches whose primary is line A (code 0)
+        if only_leaf(rep(b, "primary", A.X))[0] == 0  # ...on batches whose primary is line A (code 0)
     )
     total = sum(drug_when_a.values())
     assert total > 0, "no line-A batches drawn"

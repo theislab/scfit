@@ -36,12 +36,12 @@ COLS = ("cell_line", "drug")
 
 def test_primary_label_and_context_coherent():
     """Every stream's reported ``leaves`` entry is exactly the group its rows decode to."""
-    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16))
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), rep=A.X)
     line_code, drug_code = codes(LINES), codes(DRUGS)
     it = iter(loader)
     for _ in range(12):
         b = next(it)
-        tgt, src = rep(b, "primary"), rep(b, "ctrl")
+        tgt, src = rep(b, "primary", A.X), rep(b, "ctrl", A.X)
         line, drug = only_leaf(tgt)  # primary batch is one perturbed condition
         assert tgt[0, IS_CONTROL] == 0.0, "primary must be perturbed (not control)"
         p_leaf = b["leaves"]["primary"]  # the group the primary drew — index your own encodings with it
@@ -112,20 +112,20 @@ def test_multiple_links_are_keyed_by_name():
     streams = {"primary", "on_line", "on_drug"}
     assert set(b) == streams | {"leaves", "rows"}  # every stream present, keyed by name (no clobber)
     assert set(b["leaves"]) == streams  # and each reports the group it drew
-    tgt = rep(b, "primary")
-    assert (rep(b, "on_line")[:, 0] == tgt[0, 0]).all()  # on_line matched on the line column
-    assert (rep(b, "on_drug")[:, 1] == tgt[0, 1]).all()  # on_drug matched on the drug column
+    tgt = rep(b, "primary", A.X)
+    assert (rep(b, "on_line", A.X)[:, 0] == tgt[0, 0]).all()  # on_line matched on the line column
+    assert (rep(b, "on_drug", A.X)[:, 1] == tgt[0, 1]).all()  # on_drug matched on the drug column
 
 
 def test_match_on_empty_is_unconditional():
     # match_on=() ⇒ the control is drawn independently, so over many batches its cell line decouples from
     # the primary's — while still being a control group.
-    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), ctrl_match_on=())
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), ctrl_match_on=(), rep=A.X)
     pairs = set()
     for _ in range(40):
         b = next(iter(loader))
-        assert (rep(b, "ctrl")[:, IS_CONTROL] == 1.0).all(), "ctrl must still be a control group"
-        pairs.add((only_leaf(rep(b, "primary"))[0], only_leaf(rep(b, "ctrl"))[0]))
+        assert (rep(b, "ctrl", A.X)[:, IS_CONTROL] == 1.0).all(), "ctrl must still be a control group"
+        pairs.add((only_leaf(rep(b, "primary", A.X))[0], only_leaf(rep(b, "ctrl", A.X))[0]))
     assert any(t != c for t, c in pairs), "match_on=() must let the control decouple from the primary cell line"
 
 
@@ -151,14 +151,14 @@ def test_per_stream_batch_sizes_differ():
         seed=0,
     )
     b = next(iter(loader))
-    assert rep(b, "primary").shape[0] == 8 and rep(b, "ctrl").shape[0] == 4
+    assert rep(b, "primary", A.X).shape[0] == 8 and rep(b, "ctrl", A.X).shape[0] == 4
 
 
 def test_materialize_node_selects_positive_weight_rows():
     from scfit.data._io import leaf_codes, materialize_node
 
     adata = encoded_adata(LINES, DRUGS, 16)
-    _, links = perturbation_streams(adata)
+    _, links = perturbation_streams(adata, rep=A.X)
     mem, sub_codes, sub_leaves = materialize_node(adata, links["ctrl"])  # materialize_node takes a Stream now
     assert isinstance(mem, ad.AnnData)
     assert (mem.obs["drug"] == "control").all()  # only positive-weight (control) rows materialized
@@ -170,9 +170,9 @@ def test_materialize_node_selects_positive_weight_rows():
 
 
 def test_in_memory_control_materialized():
-    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), ctrl_in_memory=True)
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), ctrl_in_memory=True, rep=A.X)
     materialized = loader._resolved["ctrl"]  # control materialized into a RAM-backed Source
     assert isinstance(materialized, Source)
     assert isinstance(materialized.adatas[0].X, np.ndarray)  # dense, in-memory (not a backing)
     b = next(iter(loader))
-    assert (rep(b, "ctrl")[:, IS_CONTROL] == 1.0).all()  # served from memory, still matched controls
+    assert (rep(b, "ctrl", A.X)[:, IS_CONTROL] == 1.0).all()  # served from memory, still matched controls

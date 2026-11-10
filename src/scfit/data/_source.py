@@ -13,7 +13,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 
-from scfit.data._io import get_from_container, leaf_codes, materialize_node, obs_columns
+from scfit.data._io import get_from_container, is_backed_array, leaf_codes, materialize_node, obs_columns
 
 if TYPE_CHECKING:
     from scfit.data._schema import Container, Rep, Stream
@@ -78,6 +78,12 @@ class Source:
         files; a mismatch raises here rather than deep inside annbatch.
         """
         backings = get_from_container(self._adatas, ref)
+        if len({is_backed_array(b) for b in backings}) > 1:
+            raise ValueError(
+                f"rep {ref!r} is on disk in some of this source's files (zarr) and in memory in others (.h5ad or "
+                "an in-memory AnnData); annbatch streams one kind per source. Convert the .h5ad files to zarr, or "
+                "use separate source_keys."
+            )
         widths = {int(b.shape[1]) for b in backings}
         if len(widths) > 1:
             raise ValueError(

@@ -123,8 +123,7 @@ def test_list_of_paths_source_streams(tmp_path):
 
 
 def test_in_memory_source_passes_through():
-    # an already-constructed container is returned unchanged (not re-opened). Tested at the open_source
-    # boundary so it doesn't depend on annbatch's in-memory-sparse path (which needs the numba extra).
+    # an already-constructed container is returned unchanged (not re-opened)
     from scfit.data._io import open_source
 
     adata = _adata()
@@ -151,3 +150,26 @@ def test_collection_root_is_unsupported(tmp_path):
         DatasetCollection(cp, mode="a").add_adatas([ap], groupby=list(COLS), shuffle=False)
     with pytest.raises(NotImplementedError, match="DatasetCollection"):
         _loader(cp)
+    with pytest.raises(NotImplementedError, match="DatasetCollection"):  # also inside a list of paths
+        _loader([ap, cp])
+
+
+def test_h5ad_source_streams_sparse_x_in_memory(tmp_path):
+    adata = _adata()
+    p = tmp_path / "a.h5ad"
+    adata.write_h5ad(p)
+    loader = _loader(p)
+    a = loader._sources[KEY].adatas[0]
+    assert sp.issparse(a.X) and not isinstance(a.X, ad.abc.CSRDataset)  # in memory: h5ad is never backed
+    b = next(iter(loader))
+    rows = b["rows"]["primary"]
+    np.testing.assert_allclose(b["primary"][A.X].toarray(), adata.X[rows].toarray())
+    assert b["ctrl"][A.obsm["emb"]].shape == (16, 3)
+
+
+def test_a_source_mixing_zarr_and_h5ad_is_refused(tmp_path):
+    zarr_path = write_zarr(_adata(seed=0), tmp_path / "a.zarr")
+    h5ad_path = tmp_path / "b.h5ad"
+    _adata(seed=1).write_h5ad(h5ad_path)
+    with pytest.raises(ValueError, match="on disk in some of this source's files"):
+        next(iter(_loader([zarr_path, h5ad_path])))

@@ -42,7 +42,7 @@ def store(request, adata: ad.AnnData, tmp_path: Path) -> Path:
 def test_reads_only_the_referenced_parts(store: Path, adata: ad.AnnData):
     opened = open_adata(store, A.X, A.layers["counts"], A.obs["group"], uns=["table"])
     assert list(opened.obs.columns) == ["group"] and list(opened.uns) == ["table"]
-    assert [k for k in opened.layers if k is not None] == ["counts"] and list(opened.obsm) == []  # None is X
+    assert "counts" in opened.layers and opened.X is not None and list(opened.obsm) == []
     assert list(opened.var_names) == list(adata.var_names)
     assert list(opened.obs_names) == [str(i) for i in range(6)]  # no index asked for: a RangeIndex
     np.testing.assert_array_equal(opened.obs["group"], adata.obs["group"])
@@ -86,3 +86,12 @@ def test_open_source_names_missing_parts(adata: ad.AnnData, tmp_path: Path):
     adata.write_zarr(tmp_path / "d.zarr")
     with pytest.raises(KeyError, match=r"obsm\['nope'\]"):
         open_source(tmp_path / "d.zarr", A.obsm["nope"])
+
+
+def test_obs_columns_keep_the_requested_order(store: Path):
+    assert list(open_adata(store, A.obs["value"], A.obs["group"]).obs.columns) == ["value", "group"]
+
+
+def test_the_obs_index_is_not_a_column(store: Path):
+    with pytest.raises(KeyError, match="obs"):
+        open_adata(store, A.obs["_index"])

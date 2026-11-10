@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning][].
 - Breaking: `open_source(src, keys=..., cols=..., uns=...)` is now `open_source(src, *refs, uns=...)`, with arrays, `A.obs[col]` and `A.obs.index` as references. It also opens `.h5ad` paths, reading only the named parts
 - `load_backed_adata` is removed; `open_adata` and `open_source` open zarr stores the same way
 - `open_adata` and `open_source` raise one `KeyError` naming every missing rep, obs column and uns key, with what the store has, instead of failing on the first lookup
+- annbatch is installed with its `numba` extra, which it needs to stream in-memory sparse arrays such as a `.h5ad` X
+- A source whose files hold a rep on disk in some (zarr) and in memory in others (`.h5ad`, in-memory AnnData) raises, since annbatch streams one kind per source; `.h5ad` is always read into memory
+- An annbatch `DatasetCollection` root is refused in a list of paths too, and obs columns come back in the requested order
 
 ## [0.0.13] - 2026-10-26
 

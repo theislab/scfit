@@ -189,7 +189,8 @@ class Loader:
         refs: dict[str, dict] = {}  # per source_key, an ordered set of references
         for s in streams.values():
             for k in s.source_keys:
-                refs.setdefault(k, {}).update(dict.fromkeys([*s.reps, *(A.obs[c] for c in (*s.group_by, *s.match_on))]))
+                # match_on is a subset of group_by, so group_by covers the columns links match on
+                refs.setdefault(k, {}).update(dict.fromkeys([*s.reps, *(A.obs[c] for c in s.group_by)]))
         sources = {k: open_source(p, *refs.get(k, ())) for k, p in dict(paths).items()}
         return cls(
             sources,

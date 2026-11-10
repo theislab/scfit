@@ -69,7 +69,7 @@ def test_shared_obsm_rep_ok_despite_differing_x_width():
 def test_shared_source_factorized_once():
     # a primary and its matched control name the same source_key + group_by → the Source factorizes it once.
     adata = encoded_adata(("A", "B"), ("control", "d1", "d2"), 8)
-    primary, links = perturbation_streams(adata)
+    primary, links = perturbation_streams(adata, rep=A.X)
     loader = Loader(
         {KEY: adata}, primary=primary, links=links, sampler={"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
     )

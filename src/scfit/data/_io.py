@@ -16,7 +16,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import zarr
-from anndata.acc import AdRef, MetaAcc
+from anndata.acc import AdRef, LayerAcc, MetaAcc
 
 from scfit.data._schema import Container, Rep, _slot, weight_vector
 
@@ -46,8 +46,7 @@ def get_from_container(source: ad.AnnData | list[ad.AnnData], ref: Rep) -> list[
     """The array(s) backing rep ``ref`` (``A.X`` | ``A.layers[k]`` | ``A.obsm[k]``) — one per adata for a list."""
     if isinstance(source, list):
         return [b for a in source for b in get_from_container(a, ref)]
-    field, k = _slot(ref)
-    return [source.X if k is None else getattr(source, field)[k]]
+    return [ref.get(source)]
 
 
 def _put(adata: ad.AnnData, ref: Rep, value) -> None:
@@ -111,7 +110,7 @@ def materialize_node(
     order = sub_obs.sort_values(list(cols), kind="stable").index.to_numpy() if cols else np.arange(len(sub_obs))
     sub_obs, reps = sub_obs.iloc[order].reset_index(drop=True), {k: v[order] for k, v in reps.items()}
     sub_obs.index = sub_obs.index.astype(str)
-    n_vars = next((v.shape[1] for r, v in reps.items() if _slot(r)[0] != "obsm"), 0)  # X / layer width
+    n_vars = next((v.shape[1] for r, v in reps.items() if isinstance(r, LayerAcc)), 0)  # X / layer width
     adata = ad.AnnData(obs=sub_obs, var=pd.DataFrame(index=pd.RangeIndex(n_vars).astype(str)))
     for ref, v in reps.items():
         _put(adata, ref, v)
@@ -217,7 +216,7 @@ def _keys(group) -> list[str]:
 def _check_present(where, g, arrays: Sequence[Rep], cols: Sequence[str], uns: Sequence[str]) -> None:
     """Raise one :class:`KeyError` naming every missing rep, obs column and uns key, with what the store has."""
     obs = g["obs"]
-    obs_cols = set(obs.attrs.get("column-order", [])) or set(_keys(obs)) - {obs.attrs.get("_index")}
+    obs_cols = set(obs.attrs["column-order"])  # the on-disk dataframe spec lists its columns
     missing = []
     for ref in arrays:
         field, k = _slot(ref)
@@ -234,14 +233,12 @@ def _check_present(where, g, arrays: Sequence[Rep], cols: Sequence[str], uns: Se
         raise KeyError(f"{where} lacks " + "; ".join(missing))
 
 
-def _assemble(g, obs: pd.DataFrame, arrays: Sequence[Rep], uns: Sequence[str]) -> ad.AnnData:
-    """An AnnData of ``obs``, ``var``'s index, the ``arrays`` (backed) and the ``uns`` keys (in memory)."""
+def _assemble(g, obs: pd.DataFrame, arrays: dict, uns: Sequence[str]) -> ad.AnnData:
+    """An AnnData of ``obs``, ``var``'s index, the opened ``arrays`` (``{ref: array}``) and the ``uns`` keys."""
     var = g["var"]
-    adata = ad.AnnData(
-        obs=obs, var=pd.DataFrame(index=pd.Index(ad.io.read_elem(var[var.attrs.get("_index")])).astype(str))
-    )
-    for ref in arrays:
-        _put(adata, ref, read_backing(g[_path(ref)]))
+    adata = ad.AnnData(obs=obs, var=pd.DataFrame(index=pd.Index(ad.io.read_elem(var[var.attrs["_index"]])).astype(str)))
+    for ref, array in arrays.items():
+        _put(adata, ref, array)
     for key in uns:
         adata.uns[key] = ad.io.read_elem(g["uns"][key])
     return adata
@@ -265,16 +262,25 @@ def _split_refs(refs) -> tuple[list[Rep], list[str], bool]:
             arr = ref.acc if isinstance(ref, AdRef) else ref
             _slot(arr)  # X, a layer or an obsm entry
             arrays.append(arr)
-    return list(dict.fromkeys(arrays)), sorted(set(cols)), index
+    return list(dict.fromkeys(arrays)), list(dict.fromkeys(cols)), index
+
+
+def _is_h5ad(path) -> bool:
+    return os.path.splitext(os.fspath(path))[1].lower() == ".h5ad"
 
 
 def _open_store(path):
-    """A zarr group, or an h5py file for a ``.h5ad`` path."""
-    if os.fspath(path).endswith(".h5ad"):
+    """A zarr group, or an h5py file for a ``.h5ad`` path. An annbatch collection root is refused."""
+    if _is_h5ad(path):
         import h5py
 
         return h5py.File(path, "r")
-    return zarr.open_group(path, mode="r")
+    g = zarr.open_group(path, mode="r")
+    if g.attrs.get("encoding-type") == "annbatch-preshuffled":
+        raise NotImplementedError(
+            f"{path} is an annbatch DatasetCollection root, which open_adata does not support yet."
+        )
+    return g
 
 
 def open_adata(path: str | os.PathLike, *refs, uns: Sequence[str] = ()) -> ad.AnnData:
@@ -293,23 +299,21 @@ def open_adata(path: str | os.PathLike, *refs, uns: Sequence[str] = ()) -> ad.An
     """
     arrays, cols, index = _split_refs(refs)
     g = _open_store(path)
+    h5ad = not isinstance(g, zarr.Group)
     try:
         _check_present(path, g, arrays, cols, uns)
+        # zarr: on disk, wrapped for streaming; h5ad: into memory (dense or sparse) before the file closes
+        read = ad.io.read_elem if h5ad else read_backing
+        opened = {ref: read(g[_path(ref)]) for ref in arrays}
         obs_group = g["obs"]
         obs = pd.DataFrame({c: ad.io.read_elem(obs_group[c]) for c in cols})
-        if index or not (arrays or cols):  # nothing else gives the number of cells
+        if index or not (opened or cols):  # nothing else gives the number of cells
             obs.index = pd.Index(ad.io.read_elem(obs_group[obs_group.attrs["_index"]])).astype(str)
         else:
-            obs.index = pd.RangeIndex(read_backing(g[_path(arrays[0])]).shape[0] if arrays else len(obs)).astype(str)
-        adata = _assemble(g, obs, arrays, uns)
-        if isinstance(g, zarr.Group):
-            return adata
-        for ref in arrays:  # h5ad: into memory before the file closes
-            backing = get_from_container(adata, ref)[0]
-            _put(adata, ref, backing.to_memory() if hasattr(backing, "to_memory") else backing[...])
-        return adata
+            obs.index = pd.RangeIndex(next(iter(opened.values())).shape[0] if opened else len(obs)).astype(str)
+        return _assemble(g, obs, opened, uns)
     finally:
-        if not isinstance(g, zarr.Group):
+        if h5ad:
             g.close()
 
 
@@ -324,18 +328,11 @@ def open_source(src, *refs, uns: Sequence[str] = ()) -> Container:
     """
     from annbatch import DatasetCollection
 
-    def one(a):
-        return a if isinstance(a, ad.AnnData) else open_adata(a, *refs, uns=uns)
-
     if isinstance(src, ad.AnnData | DatasetCollection):
         return src
     if isinstance(src, str | os.PathLike):
-        if not os.fspath(src).endswith(".h5ad"):
-            g = zarr.open_group(src, mode="r")
-            if g.attrs.get("encoding-type") == "annbatch-preshuffled":
-                raise NotImplementedError("DatasetCollection support is not yet implemented in open_source.")
-        return one(src)
-    return [one(a) for a in src]  # list of adata paths (or already-open AnnData)
+        return open_adata(src, *refs, uns=uns)
+    return [a if isinstance(a, ad.AnnData) else open_adata(a, *refs, uns=uns) for a in src]
 
 
 def is_backed_array(arr) -> bool:

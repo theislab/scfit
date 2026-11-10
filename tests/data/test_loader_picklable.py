@@ -11,7 +11,7 @@ from scheme_helpers import feature_adata, perturbation_loader
 
 def _loader(seed=0):
     # feature_adata (random matrix — no identity to decode) so we only test state/RNG resumption
-    return perturbation_loader(feature_adata(("A", "B"), ("control", "d1", "d2"), 16, n_genes=4), seed=seed)
+    return perturbation_loader(feature_adata(("A", "B"), ("control", "d1", "d2"), 16, n_genes=4), seed=seed, rep=A.X)
 
 
 def test_pickle_mid_stream_and_resume_deterministic():
