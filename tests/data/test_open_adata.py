@@ -95,3 +95,10 @@ def test_obs_columns_keep_the_requested_order(store: Path):
 def test_the_obs_index_is_not_a_column(store: Path):
     with pytest.raises(KeyError, match="obs"):
         open_adata(store, A.obs["_index"])
+
+
+def test_skip_leaves_out_what_the_store_lacks(store: Path):
+    opened = open_adata(
+        store, A.obsm["emb"], A.obsm["nope"], A.obs["group"], A.obs["zz"], uns=["table", "gone"], missing="skip"
+    )
+    assert list(opened.obsm) == ["emb"] and list(opened.obs.columns) == ["group"] and list(opened.uns) == ["table"]

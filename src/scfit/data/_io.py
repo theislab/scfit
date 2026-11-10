@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import anndata as ad
 import numpy as np
@@ -213,20 +213,24 @@ def _keys(group) -> list[str]:
     return sorted(group.keys()) if group is not None else []
 
 
+def _has(g, ref: Rep) -> bool:
+    field, k = _slot(ref)
+    return "X" in g if k is None else k in _keys(g.get(field))
+
+
+def _obs_cols(g) -> list[str]:
+    return list(g["obs"].attrs["column-order"])  # the on-disk dataframe spec lists its columns
+
+
 def _check_present(where, g, arrays: Sequence[Rep], cols: Sequence[str], uns: Sequence[str]) -> None:
     """Raise one :class:`KeyError` naming every missing rep, obs column and uns key, with what the store has."""
-    obs = g["obs"]
-    obs_cols = set(obs.attrs["column-order"])  # the on-disk dataframe spec lists its columns
     missing = []
     for ref in arrays:
-        field, k = _slot(ref)
-        if k is None:
-            if "X" not in g:
-                missing.append("X")
-        elif k not in _keys(g.get(field)):
-            missing.append(f"{field}[{k!r}] (has {field}: {_keys(g.get(field))})")
-    if absent := sorted(set(cols) - obs_cols):
-        missing.append(f"obs {absent} (has {sorted(obs_cols)})")
+        if not _has(g, ref):
+            field, k = _slot(ref)
+            missing.append("X" if k is None else f"{field}[{k!r}] (has {field}: {_keys(g.get(field))})")
+    if absent := sorted(set(cols) - set(_obs_cols(g))):
+        missing.append(f"obs {absent} (has {sorted(_obs_cols(g))})")
     if absent := sorted(set(uns) - set(_keys(g.get("uns")))):
         missing.append(f"uns {absent} (has {_keys(g.get('uns'))})")
     if missing:
@@ -283,7 +287,9 @@ def _open_store(path):
     return g
 
 
-def open_adata(path: str | os.PathLike, *refs, uns: Sequence[str] = ()) -> ad.AnnData:
+def open_adata(
+    path: str | os.PathLike, *refs, uns: Sequence[str] = (), missing: Literal["raise", "skip"] = "raise"
+) -> ad.AnnData:
     """Open ``path`` with exactly the parts the :mod:`anndata.acc` references name.
 
     ``A.X``, ``A.layers[k]`` and ``A.obsm[k]`` open arrays; a reference into one, such as
@@ -295,13 +301,19 @@ def open_adata(path: str | os.PathLike, *refs, uns: Sequence[str] = ()) -> ad.An
     indexes. ``var`` is reduced to its index. A ``.h5ad`` file is read the same way, but its
     arrays are loaded into memory and the file is closed: the loader streams only zarr and backed sparse
     arrays, and an open h5py handle blocks writes to the file and does not survive a forked worker.
-    A reference the store lacks raises a :class:`KeyError` naming what it has.
+    A reference the store lacks raises a :class:`KeyError` naming what it has, or with ``missing="skip"`` is left
+    out, for a dataset whose files each hold some of the parts.
     """
     arrays, cols, index = _split_refs(refs)
     g = _open_store(path)
     h5ad = not isinstance(g, zarr.Group)
     try:
-        _check_present(path, g, arrays, cols, uns)
+        if missing == "skip":
+            arrays = [r for r in arrays if _has(g, r)]
+            cols = [c for c in cols if c in set(_obs_cols(g))]
+            uns = [k for k in uns if k in _keys(g.get("uns"))]
+        else:
+            _check_present(path, g, arrays, cols, uns)
         # zarr: on disk, wrapped for streaming; h5ad: into memory (dense or sparse) before the file closes
         read = ad.io.read_elem if h5ad else read_backing
         opened = {ref: read(g[_path(ref)]) for ref in arrays}
