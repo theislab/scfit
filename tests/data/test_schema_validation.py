@@ -22,8 +22,8 @@ SAMPLER = {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
 
 # ── Stream: shape guards (no Loader built) ───────────────────────────────────────────────────────────
 def test_rep_normalizes_to_tuple():
-    assert Stream("k", group_by=COLS).reps == (A.X,)  # default
-    assert Stream("k", group_by=COLS, reps=A.obsm["rep"]).reps == (A.obsm["rep"],)  # a bare reference: a 1-tuple
+    assert Stream("k", reps=A.X, group_by=COLS).reps == (A.X,)  # a bare reference: a 1-tuple
+    assert Stream("k", group_by=COLS, reps=A.obsm["rep"]).reps == (A.obsm["rep"],)
     assert Stream("k", group_by=COLS, reps=[A.X, A.layers["l"]]).reps == (A.X, A.layers["l"])
     assert Stream("k", group_by=COLS, reps=()).reps == ()  # metadata-only (EvalLoader)
 
@@ -35,7 +35,7 @@ def test_metadata_only_stream_rejected_by_training_loader():
 
 def test_source_key_must_be_non_empty_string():
     with pytest.raises(ValueError, match="source_key must be a non-empty string"):
-        Stream("", group_by=COLS)
+        Stream("", reps=A.X, group_by=COLS)
 
 
 @pytest.mark.parametrize(
@@ -54,8 +54,10 @@ def test_source_key_must_be_non_empty_string():
         ),
         pytest.param({"group_by": COLS, "reps": A.varm["v"]}, ValueError, r"not A\.X", id="varm_rep"),
         pytest.param({"group_by": COLS, "reps": A.obs["c"]}, ValueError, "not a whole array", id="obs_column_rep"),
-        pytest.param({"group_by": COLS, "weights": {("A",): 1.0}}, ValueError, "arity", id="weight_arity"),
-        pytest.param({"group_by": COLS, "weights": {("A", "d1"): -1.0}}, ValueError, "non-negative", id="neg_weight"),
+        pytest.param({"group_by": COLS, "reps": A.X, "weights": {("A",): 1.0}}, ValueError, "arity", id="weight_arity"),
+        pytest.param(
+            {"group_by": COLS, "reps": A.X, "weights": {("A", "d1"): -1.0}}, ValueError, "non-negative", id="neg_weight"
+        ),
     ],
 )
 def test_stream_rejects(kw: dict, exc: type[Exception], msg: str):
@@ -63,12 +65,17 @@ def test_stream_rejects(kw: dict, exc: type[Exception], msg: str):
         Stream("k", **kw)
 
 
+def test_stream_requires_reps():
+    with pytest.raises(TypeError, match="reps"):
+        Stream("k", group_by=COLS)
+
+
 # ── Loader: sampler resolution ─────────────────────────────────────────────────────────────────────
 def test_stream_sampler_overrides_loader():
     # `stream_samplers` gives the primary batch_size=4 over the loader-wide 8.
     ld = Loader(
         SRC,
-        primary=Stream(KEY, group_by=COLS, weights=W),
+        primary=Stream(KEY, reps=A.X, group_by=COLS, weights=W),
         sampler=SAMPLER,
         stream_samplers={"primary": {"batch_size": 4, "chunk_size": 1, "preload_nchunks": 4}},
         seed=0,
@@ -78,18 +85,23 @@ def test_stream_sampler_overrides_loader():
 
 
 def test_stream_inherits_loader_sampler():
-    ld = Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), sampler=SAMPLER, seed=0)
+    ld = Loader(SRC, primary=Stream(KEY, reps=A.X, group_by=COLS, weights=W), sampler=SAMPLER, seed=0)
     assert ld._cfg["primary"].batch_size == 8
 
 
 def test_stream_samplers_must_name_a_stream():
     with pytest.raises(ValueError, match="unknown stream"):
-        Loader(SRC, primary=Stream(KEY, group_by=COLS, weights=W), sampler=SAMPLER, stream_samplers={"ctlr": SAMPLER})
+        Loader(
+            SRC,
+            primary=Stream(KEY, reps=A.X, group_by=COLS, weights=W),
+            sampler=SAMPLER,
+            stream_samplers={"ctlr": SAMPLER},
+        )
 
 
 def test_source_key_not_in_sources_raises():
     with pytest.raises(ValueError, match="source_key 'missing' not in sources"):
-        Loader(SRC, primary=Stream("missing", group_by=COLS, weights=W), sampler=SAMPLER, seed=0)
+        Loader(SRC, primary=Stream("missing", reps=A.X, group_by=COLS, weights=W), sampler=SAMPLER, seed=0)
 
 
 # ── Loader: cross-stream guards ────────────────────────────────────────────────────────────────────────
@@ -99,8 +111,8 @@ def test_reserved_link_names(name: str):
     with pytest.raises(ValueError, match="reserved"):
         Loader(
             SRC,
-            primary=Stream(KEY, group_by=COLS, weights=W),
-            links={name: Stream(KEY, group_by=COLS, weights=W, match_on=("cell_line",))},
+            primary=Stream(KEY, reps=A.X, group_by=COLS, weights=W),
+            links={name: Stream(KEY, reps=A.X, group_by=COLS, weights=W, match_on=("cell_line",))},
             sampler=SAMPLER,
         )
 
@@ -109,8 +121,12 @@ def test_match_on_must_be_shared():
     with pytest.raises(ValueError, match="must be ⊆"):
         Loader(
             SRC,
-            primary=Stream(KEY, group_by=("cell_line", "drug"), weights=W),
-            links={"c": Stream(KEY, group_by=("drug",), match_on=("cell_line",), weights=uniform([("d1",), ("d2",)]))},
+            primary=Stream(KEY, reps=A.X, group_by=("cell_line", "drug"), weights=W),
+            links={
+                "c": Stream(
+                    KEY, reps=A.X, group_by=("drug",), match_on=("cell_line",), weights=uniform([("d1",), ("d2",)])
+                )
+            },
             sampler=SAMPLER,
         )
 
@@ -119,7 +135,7 @@ def test_in_memory_requires_chunk_one():
     with pytest.raises(ValueError, match="chunk_size=1"):
         Loader(
             SRC,
-            primary=Stream(KEY, group_by=COLS, weights=W, in_memory=True),
+            primary=Stream(KEY, reps=A.X, group_by=COLS, weights=W, in_memory=True),
             sampler={"batch_size": 8, "chunk_size": 2, "preload_nchunks": 8},
             seed=0,
         )
@@ -129,8 +145,8 @@ def test_every_stream_reports_its_leaf():
     """``batch["leaves"]`` covers every stream — no opt-in, so consumers can key their own side arrays."""
     ld = Loader(
         SRC,
-        primary=Stream(KEY, group_by=COLS, weights=W),
-        links={"c": Stream(KEY, group_by=COLS, weights=W, match_on=("cell_line",))},
+        primary=Stream(KEY, reps=A.X, group_by=COLS, weights=W),
+        links={"c": Stream(KEY, reps=A.X, group_by=COLS, weights=W, match_on=("cell_line",))},
         sampler=SAMPLER,
         seed=0,
     )

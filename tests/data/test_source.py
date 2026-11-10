@@ -39,7 +39,9 @@ def test_cross_file_categoricals_are_unioned():
 def test_leaf_resolves_to_the_file_that_holds_it():
     # sampling a leaf present in only one file must pull rows from that file (the list-order invariant).
     a, b = _file(["T", "B"], file_id=0), _file(["NK", "Mono"], file_id=1)
-    loader = Loader({KEY: [a, b]}, primary=Stream(KEY, group_by=("cell_type",), weights={("NK",): 1.0}), **READ)
+    loader = Loader(
+        {KEY: [a, b]}, primary=Stream(KEY, reps=A.X, group_by=("cell_type",), weights={("NK",): 1.0}), **READ
+    )
     for _ in range(8):
         x = np.asarray(next(iter(loader))["primary"][A.X])
         assert (x[:, 0] == 1).all()  # NK lives only in file B (file_id 1)

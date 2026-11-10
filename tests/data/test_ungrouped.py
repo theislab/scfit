@@ -17,7 +17,7 @@ def _adata(start: int, n: int) -> ad.AnnData:
 def test_training_streams_every_cell_of_every_file_as_one_group():
     loader = Loader(
         {"d": [_adata(0, 8), _adata(8, 8)]},
-        primary=Stream("d", group_by=()),
+        primary=Stream("d", reps=A.X, group_by=()),
         sampler={"batch_size": 4, "chunk_size": 1, "preload_nchunks": 4},
     )
     seen = set()
@@ -30,8 +30,8 @@ def test_training_streams_every_cell_of_every_file_as_one_group():
 def test_an_ungrouped_link_draws_from_every_cell_in_memory():
     loader = Loader(
         {"d": _adata(0, 8), "ctrl": _adata(100, 8)},
-        primary=Stream("d", group_by=()),
-        links={"ctrl": Stream("ctrl", group_by=(), in_memory=True)},
+        primary=Stream("d", reps=A.X, group_by=()),
+        links={"ctrl": Stream("ctrl", reps=A.X, group_by=(), in_memory=True)},
         sampler={"batch_size": 4, "chunk_size": 1, "preload_nchunks": 4},
     )
     batch = next(loader)
@@ -40,7 +40,7 @@ def test_an_ungrouped_link_draws_from_every_cell_in_memory():
 
 
 def test_eval_walks_the_one_group():
-    loader = EvalLoader({"d": _adata(0, 6)}, primary=Stream("d", group_by=()))
+    loader = EvalLoader({"d": _adata(0, 6)}, primary=Stream("d", reps=A.X, group_by=()))
     batches = list(loader)
     assert len(batches) == 1 and batches[0]["leaf"] == ()
     assert sorted(np.asarray(batches[0]["primary"][A.X])[:, 0].astype(int).tolist()) == list(range(6))
@@ -50,8 +50,8 @@ def test_rows_name_the_cells_each_stream_read():
     """``batch["rows"]`` is each stream's global rows, files concatenated in order, aligned with its reps."""
     loader = Loader(
         {"d": [_adata(0, 8), _adata(8, 8)], "ctrl": _adata(100, 8)},
-        primary=Stream("d", group_by=()),
-        links={"ctrl": Stream("ctrl", group_by=())},
+        primary=Stream("d", reps=A.X, group_by=()),
+        links={"ctrl": Stream("ctrl", reps=A.X, group_by=())},
         sampler={"batch_size": 4, "chunk_size": 2, "preload_nchunks": 2},
     )
     for batch in (next(loader) for _ in range(10)):

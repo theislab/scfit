@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 
 import anndata as ad
 import numpy as np
-from anndata.acc import A, AdRef, LayerAcc, MultiAcc
+from anndata.acc import AdRef, LayerAcc, MultiAcc
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
 type Container = ad.AnnData | list[ad.AnnData]
@@ -120,7 +120,7 @@ class Stream:
         source_key: str | Sequence[str],
         *,
         group_by: Sequence[str],
-        reps: Rep | Sequence[Rep] = A.X,
+        reps: Rep | Sequence[Rep],
         weights: Weights | None = None,
         match_on: Sequence[str] = (),
         in_memory: bool = False,

@@ -94,11 +94,16 @@ def test_multiple_links_are_keyed_by_name():
     loader = Loader(
         {KEY: adata},
         primary=Stream(
-            KEY, group_by=("line", "drug"), weights=uniform([(ln, dr) for ln in ("A", "B") for dr in ("d1", "d2")])
+            KEY,
+            reps=A.X,
+            group_by=("line", "drug"),
+            weights=uniform([(ln, dr) for ln in ("A", "B") for dr in ("d1", "d2")]),
         ),
         links={
-            "on_line": Stream(KEY, group_by=("line",), match_on=("line",), weights=uniform([("A",), ("B",)])),
-            "on_drug": Stream(KEY, group_by=("drug",), match_on=("drug",), weights=uniform([("d1",), ("d2",)])),
+            "on_line": Stream(KEY, reps=A.X, group_by=("line",), match_on=("line",), weights=uniform([("A",), ("B",)])),
+            "on_drug": Stream(
+                KEY, reps=A.X, group_by=("drug",), match_on=("drug",), weights=uniform([("d1",), ("d2",)])
+            ),
         },
         sampler={"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8},
         seed=0,
@@ -131,10 +136,11 @@ def test_per_stream_batch_sizes_differ():
     ctrl = uniform([(cl, CONTROL) for cl in LINES])
     loader = Loader(
         {KEY: adata},
-        primary=Stream(KEY, group_by=COLS, weights=pert),
+        primary=Stream(KEY, reps=A.X, group_by=COLS, weights=pert),
         links={
             "ctrl": Stream(
                 KEY,
+                reps=A.X,
                 group_by=COLS,
                 match_on=("cell_line",),
                 weights=ctrl,
