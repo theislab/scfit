@@ -99,7 +99,7 @@ class Stream:
         Columns whose unique combinations define the groups sampled (the leaves). ``()`` makes every cell one
         group, whose leaf is ``()``.
     reps
-        Array(s) to stream, as :mod:`anndata.acc` references — ``A.X`` (default), ``A.layers[k]`` or
+        Array(s) to stream, as :mod:`anndata.acc` references, required — ``A.X``, ``A.layers[k]`` or
         ``A.obsm[k]`` — or a tuple of them for several **aligned** reps of the same cells. Batches are keyed by
         these references. A config string resolves with ``A.resolve("obsm.X_pca", vec=False)``. ``()`` is
         **metadata-only** — no cell matrix is read and the stream contributes only its leaf, for a prediction pass over covariate
