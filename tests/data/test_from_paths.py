@@ -1,7 +1,7 @@
 """Path sources — ``Loader.from_paths`` opens zarr ``{source_key: path | [paths]}`` backed.
 
 Covers the source-value shapes (single path / list of paths / already-constructed AnnData), the "load only
-the reps the streams use" contract (via ``load_backed_adata``), that an annbatch collection root is
+the reps the streams use" contract (via ``open_source``), that an annbatch collection root is
 rejected (unsupported), and that a path-sourced loader streams matched batches end-to-end.
 """
 
@@ -15,10 +15,10 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 from annbatch import DatasetCollection
+from anndata.acc import A
 from scheme_helpers import KEY, perturbation_obs, uniform, write_zarr
 
 from scfit.data import Loader, Stream, obs_columns, open_source
-from scfit.data._io import load_backed_adata
 
 LINES = ("A", "B")
 DRUGS = ("control", "d1", "d2")
@@ -42,8 +42,8 @@ def _streams():
     pert = uniform([c for c in combos if c[1] != "control"])
     ctrl = uniform([c for c in combos if c[1] == "control"])
     return (
-        Stream(KEY, group_by=COLS, reps="X", weights=pert),
-        {"ctrl": Stream(KEY, group_by=COLS, reps=("X", "obsm/emb"), match_on=("cell_line",), weights=ctrl)},
+        Stream(KEY, group_by=COLS, reps=A.X, weights=pert),
+        {"ctrl": Stream(KEY, group_by=COLS, reps=(A.X, A.obsm["emb"]), match_on=("cell_line",), weights=ctrl)},
     )
 
 
@@ -52,37 +52,31 @@ def _loader(path_value):
     return Loader.from_paths({KEY: path_value}, primary=primary, links=links, seed=0, **READ)
 
 
-def _open_group(path):
-    import zarr
-
-    return zarr.open_group(path, mode="r")
-
-
-# ── load_backed_adata: only the requested reps/cols are materialized ───────────────────────────
-def test_load_backed_adata_reads_only_requested_keys(tmp_path):
-    g = _open_group(write_zarr(_adata(), tmp_path / "a.zarr"))
-    backed = load_backed_adata(g, keys=("X", "obsm/emb"), cols=COLS)
+# ── open_source on a zarr path: only the requested reps/cols are materialized ───────────────────
+def test_open_source_reads_only_requested_keys(tmp_path):
+    p = write_zarr(_adata(), tmp_path / "a.zarr")
+    backed = open_source(p, A.X, A.obsm["emb"], *(A.obs[c] for c in COLS))
     assert isinstance(backed.X, ad.abc.CSRDataset)  # sparse rep stays backed (not read into RAM)
-    assert list(backed.obsm) == ["emb"]  # obsm/emb requested → present
-    assert "log1p" not in backed.layers  # layers/log1p not requested → never touched
+    assert list(backed.obsm) == ["emb"]  # A.obsm["emb"] requested → present
+    assert "log1p" not in backed.layers  # A.layers["log1p"] not requested → never touched
     assert list(backed.obs.columns) == list(COLS)  # obs reduced to the requested cols
     np.testing.assert_array_equal(backed.obsm["emb"].shape, (backed.n_obs, 3))
 
 
-def test_load_backed_adata_layers_and_no_x(tmp_path):
-    g = _open_group(write_zarr(_adata(), tmp_path / "a.zarr"))
-    backed = load_backed_adata(g, keys=("layers/log1p",), cols=("cell_line",))
+def test_open_source_layers_and_no_x(tmp_path):
+    p = write_zarr(_adata(), tmp_path / "a.zarr")
+    backed = open_source(p, A.layers["log1p"], A.obs["cell_line"])
     assert backed.X is None  # X not requested
     assert "log1p" in backed.layers  # requested layer present
     assert list(backed.obs.columns) == ["cell_line"]
 
 
-def test_load_backed_adata_reads_only_requested_uns(tmp_path):
+def test_open_source_reads_only_requested_uns(tmp_path):
     adata = _adata()
     adata.uns["drug"] = {"a": np.arange(3.0), "b": np.ones(3)}
     adata.uns["unused"] = {"x": 1}
-    g = _open_group(write_zarr(adata, tmp_path / "a.zarr"))
-    backed = load_backed_adata(g, keys=(), cols=("cell_line",), uns=("drug",))
+    p = write_zarr(adata, tmp_path / "a.zarr")
+    backed = open_source(p, A.obs["cell_line"], uns=("drug",))
     assert list(backed.uns) == ["drug"]
     np.testing.assert_array_equal(backed.uns["drug"]["a"], np.arange(3.0))
 
@@ -92,7 +86,7 @@ def test_open_source_reads_a_list_of_stores_as_backed_adata(tmp_path):
     adata = _adata()
     adata.uns["drug"] = {"a": np.arange(3.0)}
     paths = [write_zarr(adata[:10].copy(), tmp_path / "a.zarr"), write_zarr(adata[10:].copy(), tmp_path / "b.zarr")]
-    backed = open_source(paths, keys=("obsm/emb",), cols=("cell_line",), uns=("drug",))
+    backed = open_source(paths, A.obsm["emb"], A.obs["cell_line"], uns=("drug",))
     assert [a.n_obs for a in backed] == [10, adata.n_obs - 10]
     assert all("drug" in a.uns and list(a.obs.columns) == ["cell_line"] for a in backed)
 
@@ -112,12 +106,12 @@ def test_single_path_source_opened_backed_and_streams(tmp_path):
     loader = _loader(p)
     a = loader._sources[KEY].adatas[0]
     assert isinstance(a.X, ad.abc.CSRDataset)  # backed, not in-memory
-    assert list(a.obsm) == ["emb"]  # only the reps the streams use (union: X + obsm/emb)
+    assert list(a.obsm) == ["emb"]  # only the reps the streams use (union: A.X + A.obsm["emb"])
     assert "log1p" not in a.layers
     b = next(iter(loader))
-    assert b["primary"]["X"].shape == (16, 5)
-    assert b["ctrl"]["X"].shape == (16, 5)  # matched control rows
-    assert b["ctrl"]["obsm/emb"].shape == (16, 3)  # aligned obsm rep of the same cells
+    assert b["primary"][A.X].shape == (16, 5)
+    assert b["ctrl"][A.X].shape == (16, 5)  # matched control rows
+    assert b["ctrl"][A.obsm["emb"]].shape == (16, 3)  # aligned obsm rep of the same cells
 
 
 def test_list_of_paths_source_streams(tmp_path):
@@ -125,16 +119,27 @@ def test_list_of_paths_source_streams(tmp_path):
     loader = _loader(paths)
     adatas = loader._sources[KEY].adatas
     assert len(adatas) == 2 and all(isinstance(a, ad.AnnData) for a in adatas)
-    assert next(iter(loader))["primary"]["X"].shape == (16, 5)
+    assert next(iter(loader))["primary"][A.X].shape == (16, 5)
 
 
 def test_in_memory_source_passes_through():
-    # an already-constructed container is returned unchanged (not re-opened). Tested at the open_source
-    # boundary so it doesn't depend on annbatch's in-memory-sparse path (which needs the numba extra).
+    # an already-constructed container is returned unchanged (not re-opened)
     from scfit.data._io import open_source
 
     adata = _adata()
-    assert open_source(adata, keys=("X",), cols=COLS) is adata
+    assert open_source(adata, A.X, *(A.obs[c] for c in COLS)) is adata
+
+
+def test_layers_rep_streams_the_layer(tmp_path):
+    adata = _adata()
+    p = write_zarr(adata, tmp_path / "a.zarr")
+    stream = Stream(KEY, group_by=COLS, reps=A.layers["log1p"])
+    loader = Loader.from_paths({KEY: p}, primary=stream, seed=0, **READ)
+    b = next(iter(loader))
+    assert list(b["primary"]) == [A.layers["log1p"]]  # keyed by the reference
+    np.testing.assert_allclose(
+        b["primary"][A.layers["log1p"]].toarray(), adata.layers["log1p"][b["rows"]["primary"]].toarray()
+    )
 
 
 def test_collection_root_is_unsupported(tmp_path):
@@ -145,3 +150,26 @@ def test_collection_root_is_unsupported(tmp_path):
         DatasetCollection(cp, mode="a").add_adatas([ap], groupby=list(COLS), shuffle=False)
     with pytest.raises(NotImplementedError, match="DatasetCollection"):
         _loader(cp)
+    with pytest.raises(NotImplementedError, match="DatasetCollection"):  # also inside a list of paths
+        _loader([ap, cp])
+
+
+def test_h5ad_source_streams_sparse_x_in_memory(tmp_path):
+    adata = _adata()
+    p = tmp_path / "a.h5ad"
+    adata.write_h5ad(p)
+    loader = _loader(p)
+    a = loader._sources[KEY].adatas[0]
+    assert sp.issparse(a.X) and not isinstance(a.X, ad.abc.CSRDataset)  # in memory: h5ad is never backed
+    b = next(iter(loader))
+    rows = b["rows"]["primary"]
+    np.testing.assert_allclose(b["primary"][A.X].toarray(), adata.X[rows].toarray())
+    assert b["ctrl"][A.obsm["emb"]].shape == (16, 3)
+
+
+def test_a_source_mixing_zarr_and_h5ad_is_refused(tmp_path):
+    zarr_path = write_zarr(_adata(seed=0), tmp_path / "a.zarr")
+    h5ad_path = tmp_path / "b.h5ad"
+    _adata(seed=1).write_h5ad(h5ad_path)
+    with pytest.raises(ValueError, match="on disk in some of this source's files"):
+        next(iter(_loader([zarr_path, h5ad_path])))

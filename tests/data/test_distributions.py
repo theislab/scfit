@@ -12,6 +12,7 @@ from collections import Counter
 from itertools import islice
 
 import pytest
+from anndata.acc import A
 from scheme_helpers import KEY, assert_shares, encoded_adata, leaf_shares, only_leaf, rep, uniform
 
 from scfit.data import Loader, Stream
@@ -42,7 +43,7 @@ READ = {"sampler": {"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}}
 )
 def test_primary_draw_shares(weights: dict, expected: dict):
     adata = encoded_adata(("A", "B"), ("d1", "d2"), n_per_combo=64)
-    loader = Loader({KEY: adata}, primary=Stream(KEY, group_by=COLS, weights=weights), **READ, seed=0)
+    loader = Loader({KEY: adata}, primary=Stream(KEY, reps=A.X, group_by=COLS, weights=weights), **READ, seed=0)
     assert_shares(leaf_shares(loader, "primary", 5000), expected)
 
 
@@ -52,10 +53,13 @@ def test_link_label_follows_weights_within_context():
     adata = encoded_adata(("A", "B"), ("d1", "d2"), n_per_combo=64)
     loader = Loader(
         {KEY: adata},
-        primary=Stream(KEY, group_by=COLS, weights=uniform([("A", "d1"), ("A", "d2"), ("B", "d1"), ("B", "d2")])),
+        primary=Stream(
+            KEY, reps=A.X, group_by=COLS, weights=uniform([("A", "d1"), ("A", "d2"), ("B", "d1"), ("B", "d2")])
+        ),
         links={
             "src": Stream(
                 KEY,
+                reps=A.X,
                 group_by=COLS,
                 match_on=("cell_line",),
                 weights={("A", "d1"): 3, ("A", "d2"): 1, ("B", "d1"): 1, ("B", "d2"): 1},
@@ -65,9 +69,9 @@ def test_link_label_follows_weights_within_context():
         seed=0,
     )
     drug_when_a = Counter(
-        only_leaf(rep(b, "src"))[1]  # the source drug code...
+        only_leaf(rep(b, "src", A.X))[1]  # the source drug code...
         for b in islice(loader, 6000)
-        if only_leaf(rep(b, "primary"))[0] == 0  # ...on batches whose primary is line A (code 0)
+        if only_leaf(rep(b, "primary", A.X))[0] == 0  # ...on batches whose primary is line A (code 0)
     )
     total = sum(drug_when_a.values())
     assert total > 0, "no line-A batches drawn"

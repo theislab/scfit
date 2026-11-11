@@ -1,22 +1,24 @@
 """Container-agnostic data access for the loader: obs columns, leaf codes, and rep backings.
 
 Every helper works uniformly over an in-memory ``AnnData``, an out-of-core annbatch
-``DatasetCollection``, and ``X`` / ``obsm`` / ``layers`` reps, so the loader never branches on the source
-kind. No cell matrices are touched for grouping — obs only.
+``DatasetCollection``, and reps given as :mod:`anndata.acc` references (``A.X``, ``A.layers[k]``,
+``A.obsm[k]``), so the loader never branches on the source kind. No cell matrices are touched for
+grouping — obs only.
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import anndata as ad
 import numpy as np
 import pandas as pd
 import zarr
+from anndata.acc import AdRef, LayerAcc, MetaAcc
 
-from scfit.data._schema import Container, weight_vector
+from scfit.data._schema import Container, Rep, _slot, weight_vector
 
 if TYPE_CHECKING:
     from scfit.data._schema import Stream
@@ -24,9 +26,9 @@ if TYPE_CHECKING:
 __all__ = [
     "get_from_container",
     "leaf_codes",
-    "load_backed_adata",
     "materialize_node",
     "obs_columns",
+    "open_adata",
     "open_source",
     "is_backed_array",
 ]
@@ -40,25 +42,37 @@ def read_backing(x: zarr.Array | zarr.Group) -> zarr.Array | ad.abc.CSRDataset:
     return sparse_dataset(x)
 
 
-def get_from_container(source: ad.AnnData | list[ad.AnnData], loc: str) -> list[zarr.Array | ad.abc.CSRDataset]:
-    """The array(s) backing rep ``loc`` (``"X"`` | ``"obsm/<k>"`` | ``"layers/<k>"``) — one per adata for a list."""
+def get_from_container(source: ad.AnnData | list[ad.AnnData], ref: Rep) -> list[zarr.Array | ad.abc.CSRDataset]:
+    """The array(s) backing rep ``ref`` (``A.X`` | ``A.layers[k]`` | ``A.obsm[k]``) — one per adata for a list."""
     if isinstance(source, list):
-        return [b for a in source for b in get_from_container(a, loc)]
-    if loc == "X":
-        return [source.X]
-    field, sub = loc.split("/", 1)  # "obsm/<k>" | "layers/<k>"
-    return [getattr(source, field)[sub]]
+        return [b for a in source for b in get_from_container(a, ref)]
+    return [ref.get(source)]
 
 
-def _read_rows(source: Container, loc: str, row_idx: np.ndarray) -> np.ndarray:
-    r"""Densely read the global rows ``row_idx`` (ascending, unique) of rep ``loc`` from a source's backings.
+def _put(adata: ad.AnnData, ref: Rep, value) -> None:
+    """Place ``value`` at rep ``ref``'s slot of ``adata``, so :func:`get_from_container` finds it again."""
+    field, k = _slot(ref)
+    if k is None:
+        adata.X = value
+    else:
+        getattr(adata, field)[k] = value
+
+
+def _path(ref: Rep) -> str:
+    """Rep ``ref``'s path inside a zarr / h5ad store (``"X"``, ``"layers/<k>"``, ``"obsm/<k>"``)."""
+    field, k = _slot(ref)
+    return field if k is None else f"{field}/{k}"
+
+
+def _read_rows(source: Container, ref: Rep, row_idx: np.ndarray) -> np.ndarray:
+    r"""Densely read the global rows ``row_idx`` (ascending, unique) of rep ``ref`` from a source's backings.
 
     Each maximal run of *consecutive* rows is read as one contiguous slice (``b[start:stop]``), not a
     scattered fancy-index gather — so a leaf-contiguous layout collapses to a few big reads, and fully
     scattered rows degrade to one slice per row (still correct). Slicing reads uniformly across dense zarr,
     backed ``CSRDataset``\\s and in-memory arrays, so no per-backend indexing branch is needed.
     """
-    backings = get_from_container(source, loc)  # each has ``.shape`` (sparse groups already wrapped by read_backing)
+    backings = get_from_container(source, ref)  # each has ``.shape`` (sparse groups already wrapped by read_backing)
     offs = np.concatenate([[0], np.cumsum([b.shape[0] for b in backings])]).astype(np.int64)
     parts = []
     for d, b in enumerate(backings):
@@ -90,17 +104,16 @@ def materialize_node(
     codes, leaves = factorization if factorization is not None else leaf_codes(obs, cols)
     selected = np.flatnonzero(weight_vector(stream.weights, leaves) > 0)  # leaf codes with positive weight
     row_idx = np.flatnonzero(np.isin(codes, selected))  # ascending global rows of the selected leaves
-    reps = {loc: _read_rows(source, loc, row_idx) for loc in stream.reps}  # keyed by loc string
+    reps = {ref: _read_rows(source, ref, row_idx) for ref in stream.reps}  # keyed by reference
     sub_obs = obs.iloc[row_idx].reset_index(drop=True)
     # contiguous runs for chunk>1; with no grouping every row is already in the one run
     order = sub_obs.sort_values(list(cols), kind="stable").index.to_numpy() if cols else np.arange(len(sub_obs))
     sub_obs, reps = sub_obs.iloc[order].reset_index(drop=True), {k: v[order] for k, v in reps.items()}
     sub_obs.index = sub_obs.index.astype(str)
-    adata = ad.AnnData(X=reps["X"], obs=sub_obs) if "X" in reps else ad.AnnData(obs=sub_obs)  # X -> n_var inferred
-    for loc, v in reps.items():  # place each non-X rep so `get_from_container(adata, loc)` finds it again
-        if loc != "X":
-            field, sub = loc.split("/", 1)  # "obsm/<k>" | "layers/<k>"
-            getattr(adata, field)[sub] = v
+    n_vars = next((v.shape[1] for r, v in reps.items() if isinstance(r, LayerAcc)), 0)  # X / layer width
+    adata = ad.AnnData(obs=sub_obs, var=pd.DataFrame(index=pd.RangeIndex(n_vars).astype(str)))
+    for ref, v in reps.items():
+        _put(adata, ref, v)
     # Subset (codes, leaves) derived from the parent factorization — no re-factorize. Parent ``leaves`` are
     # string-sorted, so the distinct parent codes present (ascending) are already the subset's leaves in that
     # order, and searchsorted compacts parent → subset codes. Byte-identical to leaf_codes(sub_obs, cols).
@@ -196,76 +209,142 @@ def _align_categoricals(frames: list[pd.DataFrame]) -> None:
             f[col] = f[col].cat.set_categories(union)  # replace the column; `.loc` cannot change a dtype
 
 
-def _read_obs_cols(obs_group, cols: Sequence[str]) -> pd.DataFrame:
-    """Read only ``cols`` from a zarr obs group as a pandas frame — no full read, no xarray ``Dataset2D``.
-
-    ``read_elem(obs_group)`` decodes every column; ``read_lazy`` yields an xarray ``Dataset2D``. Instead each
-    requested column is read on its own (``read_elem`` reconstructs its dtype). The obs **index** is
-    deliberately not read — often a large barcode array (Tahoe: ~1.4GB over 90M cells) that nothing
-    downstream uses; the frame gets a default ``RangeIndex``. (Pass ``cols=()`` for the full obs incl. index.)
-    """
-    if not cols:
-        return ad.io.read_elem(obs_group)
-    return pd.DataFrame({c: ad.io.read_elem(obs_group[c]) for c in cols})
+def _keys(group) -> list[str]:
+    return sorted(group.keys()) if group is not None else []
 
 
-def load_backed_adata(g, *, keys: Sequence[str], cols: Sequence[str] = (), uns: Sequence[str] = ()) -> ad.AnnData:
-    """Open a zarr adata group as a (backed) AnnData, reading only the reps in ``keys``, obs ``cols`` and ``uns``.
+def _has(g, ref: Rep) -> bool:
+    field, k = _slot(ref)
+    return "X" in g if k is None else k in _keys(g.get(field))
 
-    Each rep loc (``"X"`` | ``"obsm/<k>"`` | ``"layers/<k>"``) is read straight from the zarr group and
-    wrapped backed via :func:`read_backing` (dense array passes through; a sparse group becomes a
-    ``CSRDataset``), so nothing is pulled into RAM, and placed at the matching slot so
-    ``get_from_container`` finds it again. ``var`` is reduced to its index, ``obs`` to ``cols`` and ``uns`` to
-    the ``uns`` keys, which are read into memory (small lookups such as embedding tables).
-    """
+
+def _obs_cols(g) -> list[str]:
+    return list(g["obs"].attrs["column-order"])  # the on-disk dataframe spec lists its columns
+
+
+def _check_present(where, g, arrays: Sequence[Rep], cols: Sequence[str], uns: Sequence[str]) -> None:
+    """Raise one :class:`KeyError` naming every missing rep, obs column and uns key, with what the store has."""
+    missing = []
+    for ref in arrays:
+        if not _has(g, ref):
+            field, k = _slot(ref)
+            missing.append("X" if k is None else f"{field}[{k!r}] (has {field}: {_keys(g.get(field))})")
+    if absent := sorted(set(cols) - set(_obs_cols(g))):
+        missing.append(f"obs {absent} (has {sorted(_obs_cols(g))})")
+    if absent := sorted(set(uns) - set(_keys(g.get("uns")))):
+        missing.append(f"uns {absent} (has {_keys(g.get('uns'))})")
+    if missing:
+        raise KeyError(f"{where} lacks " + "; ".join(missing))
+
+
+def _assemble(g, obs: pd.DataFrame, arrays: dict, uns: Sequence[str]) -> ad.AnnData:
+    """An AnnData of ``obs``, ``var``'s index, the opened ``arrays`` (``{ref: array}``) and the ``uns`` keys."""
     var = g["var"]
-    obs = _read_obs_cols(g["obs"], cols)
-    obs.index = obs.index.astype(str)
-    kw: dict = {
-        "obs": obs,
-        "var": pd.DataFrame(index=pd.Index(ad.io.read_elem(var[var.attrs.get("_index")]))),
-    }
-    if "X" in keys:
-        kw["X"] = read_backing(g["X"])
-    adata = ad.AnnData(**kw)
-    for key in keys:
-        if key == "X":
-            continue
-        field, sub = key.split("/", 1)  # "obsm/<k>" | "layers/<k>"
-        getattr(adata, field)[sub] = read_backing(g[field][sub])
+    adata = ad.AnnData(obs=obs, var=pd.DataFrame(index=pd.Index(ad.io.read_elem(var[var.attrs["_index"]])).astype(str)))
+    for ref, array in arrays.items():
+        _put(adata, ref, array)
     for key in uns:
         adata.uns[key] = ad.io.read_elem(g["uns"][key])
     return adata
 
 
-def open_source(src, *, keys: Sequence[str], cols: Sequence[str] = (), uns: Sequence[str] = ()) -> Container:
+def _split_refs(refs) -> tuple[list[Rep], list[str], bool]:
+    """``(arrays, obs columns, whether the obs index is asked for)`` from :mod:`anndata.acc` references.
+
+    A reference into an array (``A.obsm["pca"][:, 0]``) stands for the whole array.
+    """
+    arrays, cols, index = [], [], False
+    for ref in refs:
+        if isinstance(ref, AdRef) and isinstance(ref.acc, MetaAcc):
+            if ref.acc.dim != "obs":
+                raise ValueError(f"{ref!r}: only obs columns and the obs index can be opened, not var.")
+            if ref.idx is None:
+                index = True
+            else:
+                cols.append(ref.idx)
+        else:
+            arr = ref.acc if isinstance(ref, AdRef) else ref
+            _slot(arr)  # X, a layer or an obsm entry
+            arrays.append(arr)
+    return list(dict.fromkeys(arrays)), list(dict.fromkeys(cols)), index
+
+
+def _is_h5ad(path) -> bool:
+    return os.path.splitext(os.fspath(path))[1].lower() == ".h5ad"
+
+
+def _open_store(path):
+    """A zarr group, or an h5py file for a ``.h5ad`` path. An annbatch collection root is refused."""
+    if _is_h5ad(path):
+        import h5py
+
+        return h5py.File(path, "r")
+    g = zarr.open_group(path, mode="r")
+    if g.attrs.get("encoding-type") == "annbatch-preshuffled":
+        raise NotImplementedError(
+            f"{path} is an annbatch DatasetCollection root, which open_adata does not support yet."
+        )
+    return g
+
+
+def open_adata(
+    path: str | os.PathLike, *refs, uns: Sequence[str] = (), missing: Literal["raise", "skip"] = "raise"
+) -> ad.AnnData:
+    """Open ``path`` with exactly the parts the :mod:`anndata.acc` references name.
+
+    ``A.X``, ``A.layers[k]`` and ``A.obsm[k]`` open arrays; a reference into one, such as
+    ``A.obsm["pca"][:, 0]``, opens the whole array. ``A.obs[col]`` reads a column and ``A.obs.index`` the obs
+    names; without it the frame gets a ``RangeIndex``. ``uns`` keys are read into memory.
+
+    The arrays of a zarr store stay on disk, wrapped by :func:`read_backing` (a dense array passes through,
+    a sparse group becomes a ``CSRDataset``), so the loader streams them and a caller reads only the rows it
+    indexes. ``var`` is reduced to its index. A ``.h5ad`` file is read the same way, but its
+    arrays are loaded into memory and the file is closed: the loader streams only zarr and backed sparse
+    arrays, and an open h5py handle blocks writes to the file and does not survive a forked worker.
+    A reference the store lacks raises a :class:`KeyError` naming what it has, or with ``missing="skip"`` is left
+    out, for a dataset whose files each hold some of the parts.
+    """
+    arrays, cols, index = _split_refs(refs)
+    g = _open_store(path)
+    h5ad = not isinstance(g, zarr.Group)
+    try:
+        if missing == "skip":
+            arrays = [r for r in arrays if _has(g, r)]
+            cols = [c for c in cols if c in set(_obs_cols(g))]
+            uns = [k for k in uns if k in _keys(g.get("uns"))]
+        else:
+            _check_present(path, g, arrays, cols, uns)
+        # zarr: on disk, wrapped for streaming; h5ad: into memory (dense or sparse) before the file closes
+        read = ad.io.read_elem if h5ad else read_backing
+        opened = {ref: read(g[_path(ref)]) for ref in arrays}
+        obs_group = g["obs"]
+        obs = pd.DataFrame({c: ad.io.read_elem(obs_group[c]) for c in cols})
+        if index or not (opened or cols):  # nothing else gives the number of cells
+            obs.index = pd.Index(ad.io.read_elem(obs_group[obs_group.attrs["_index"]])).astype(str)
+        else:
+            obs.index = pd.RangeIndex(next(iter(opened.values())).shape[0] if opened else len(obs)).astype(str)
+        return _assemble(g, obs, opened, uns)
+    finally:
+        if h5ad:
+            g.close()
+
+
+def open_source(src, *refs, uns: Sequence[str] = ()) -> Container:
     """Resolve one :class:`~scfit.data.Stream` source value to a :data:`~scfit.data.Container`.
 
-    An in-memory ``AnnData`` or ``DatasetCollection`` passes through unchanged. A single path is opened as
-    zarr and auto-detected: an annbatch collection root (``encoding-type`` ``"annbatch-preshuffled"``)
-    becomes a ``DatasetCollection``; otherwise it is a single adata read backed via :func:`load_backed_adata`.
-    A list of paths becomes a list of backed AnnData (the loader feeds one backing per adata to
-    ``add_datasets``). Only the reps in ``keys``, obs ``cols`` and ``uns`` keys are read (see
-    :func:`load_backed_adata`).
+    An in-memory ``AnnData`` or ``DatasetCollection`` passes through unchanged. A path (zarr or ``.h5ad``) is
+    opened with :func:`open_adata`, reading only the parts the :mod:`anndata.acc` ``refs`` name and the
+    ``uns`` keys; a zarr annbatch collection root (``encoding-type`` ``"annbatch-preshuffled"``) is not yet
+    supported. A list of paths becomes a list of AnnData (the loader feeds one backing per adata to
+    ``add_datasets``).
     """
-    import zarr
     from annbatch import DatasetCollection
 
     if isinstance(src, ad.AnnData | DatasetCollection):
         return src
     if isinstance(src, str | os.PathLike):
-        g = zarr.open_group(src, mode="r")
-        if g.attrs.get("encoding-type") == "annbatch-preshuffled":
-            raise NotImplementedError("DatasetCollection support is not yet implemented in open_source.")
-            # return DatasetCollection(src, mode="r")
-        return load_backed_adata(g, keys=keys, cols=cols, uns=uns)
-    # list/sequence of adata zarr paths (or already-open AnnData) → list of backed AnnData
-    return [
-        a
-        if isinstance(a, ad.AnnData)
-        else load_backed_adata(zarr.open_group(a, mode="r"), keys=keys, cols=cols, uns=uns)
-        for a in src
-    ]
+        return open_adata(src, *refs, uns=uns)
+    return [a if isinstance(a, ad.AnnData) else open_adata(a, *refs, uns=uns) for a in src]
 
 
 def is_backed_array(arr) -> bool:

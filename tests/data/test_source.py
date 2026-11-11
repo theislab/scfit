@@ -12,6 +12,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
+from anndata.acc import A
 from scheme_helpers import KEY, encoded_adata, perturbation_streams
 
 from scfit.data import Loader, Stream
@@ -38,9 +39,11 @@ def test_cross_file_categoricals_are_unioned():
 def test_leaf_resolves_to_the_file_that_holds_it():
     # sampling a leaf present in only one file must pull rows from that file (the list-order invariant).
     a, b = _file(["T", "B"], file_id=0), _file(["NK", "Mono"], file_id=1)
-    loader = Loader({KEY: [a, b]}, primary=Stream(KEY, group_by=("cell_type",), weights={("NK",): 1.0}), **READ)
+    loader = Loader(
+        {KEY: [a, b]}, primary=Stream(KEY, reps=A.X, group_by=("cell_type",), weights={("NK",): 1.0}), **READ
+    )
     for _ in range(8):
-        x = np.asarray(next(iter(loader))["primary"]["X"])
+        x = np.asarray(next(iter(loader))["primary"][A.X])
         assert (x[:, 0] == 1).all()  # NK lives only in file B (file_id 1)
 
 
@@ -49,7 +52,7 @@ def test_rep_width_mismatch_raises():
     a = _file(["T"], 0)  # X width 2
     b = ad.AnnData(np.zeros((8, 3), "float32"), obs=pd.DataFrame({"cell_type": ["NK"] * 8}))  # X width 3
     with pytest.raises(ValueError, match=r"inconsistent shape\[1\]"):
-        Source([a, b]).rep("X")
+        Source([a, b]).rep(A.X)
 
 
 def test_shared_obsm_rep_ok_despite_differing_x_width():
@@ -59,14 +62,14 @@ def test_shared_obsm_rep_ok_despite_differing_x_width():
     a.obsm["emb"] = np.zeros((a.n_obs, 4), "float32")
     b.obsm["emb"] = np.zeros((b.n_obs, 4), "float32")
     src = Source([a, b])
-    assert [x.shape[1] for x in src.rep("obsm/emb")] == [4, 4]  # equal-width rep → no error
+    assert [x.shape[1] for x in src.rep(A.obsm["emb"])] == [4, 4]  # equal-width rep → no error
 
 
 # ── shared factorization ────────────────────────────────────────────────────────────────────────
 def test_shared_source_factorized_once():
     # a primary and its matched control name the same source_key + group_by → the Source factorizes it once.
     adata = encoded_adata(("A", "B"), ("control", "d1", "d2"), 8)
-    primary, links = perturbation_streams(adata)
+    primary, links = perturbation_streams(adata, rep=A.X)
     loader = Loader(
         {KEY: adata}, primary=primary, links=links, sampler={"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8}
     )
