@@ -76,7 +76,7 @@ def test_open_source_reads_only_requested_uns(tmp_path):
     adata.uns["drug"] = {"a": np.arange(3.0), "b": np.ones(3)}
     adata.uns["unused"] = {"x": 1}
     p = write_zarr(adata, tmp_path / "a.zarr")
-    backed = open_source(p, A.obs["cell_line"], uns=("drug",))
+    backed = open_source(p, A.obs["cell_line"], uns_keys=("drug",))
     assert list(backed.uns) == ["drug"]
     np.testing.assert_array_equal(backed.uns["drug"]["a"], np.arange(3.0))
 
@@ -86,7 +86,7 @@ def test_open_source_reads_a_list_of_stores_as_backed_adata(tmp_path):
     adata = _adata()
     adata.uns["drug"] = {"a": np.arange(3.0)}
     paths = [write_zarr(adata[:10].copy(), tmp_path / "a.zarr"), write_zarr(adata[10:].copy(), tmp_path / "b.zarr")]
-    backed = open_source(paths, A.obsm["emb"], A.obs["cell_line"], uns=("drug",))
+    backed = open_source(paths, A.obsm["emb"], A.obs["cell_line"], uns_keys=("drug",))
     assert [a.n_obs for a in backed] == [10, adata.n_obs - 10]
     assert all("drug" in a.uns and list(a.obs.columns) == ["cell_line"] for a in backed)
 

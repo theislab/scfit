@@ -12,12 +12,12 @@ and this project adheres to [Semantic Versioning][].
 
 ### Added
 
-- `scfit.data.open_adata(path, *refs, uns=...)` opens a `.zarr` or `.h5ad` store with exactly the parts the `anndata.acc` references name: `A.X`, `A.layers[k]`, `A.obsm[k]` (arrays, on disk for zarr), `A.obs[col]` and `A.obs.index`. A `.h5ad` file's arrays are read into memory and the file is closed
+- `scfit.data.open_adata(path, *refs, uns_keys=...)` opens a `.zarr` or `.h5ad` store with exactly the parts the `anndata.acc` references name: `A.X`, `A.layers[k]`, `A.obsm[k]` (arrays, on disk for zarr), `A.obs[col]` and `A.obs.index`. A `.h5ad` file's arrays are read into memory and the file is closed
 
 ### Changed
 
 - Breaking: array locations are `anndata.acc` references instead of loc strings. `Stream(reps=...)` is required (no default: `A.X` is never implied) and takes `A.X`, `A.layers[k]` or `A.obsm[k]`, or a sequence of them, and rejects strings and references into an array. Batches from `Loader` and `EvalLoader` are keyed by these references: `batch["primary"][A.obsm["X_pca"]]`. Migrate `"X"` to `A.X`, `"obsm/X_pca"` to `A.obsm["X_pca"]` and `"layers/k"` to `A.layers["k"]`; a config string resolves with `A.resolve("obsm.X_pca", vec=False)`. `group_by` and `match_on` stay column names
-- Breaking: `open_source(src, keys=..., cols=..., uns=...)` is now `open_source(src, *refs, uns=...)`, with arrays, `A.obs[col]` and `A.obs.index` as references. It also opens `.h5ad` paths, reading only the named parts
+- Breaking: `open_source(src, keys=..., cols=..., uns=...)` is now `open_source(src, *refs, uns_keys=...)`, with arrays, `A.obs[col]` and `A.obs.index` as references. It also opens `.h5ad` paths, reading only the named parts
 - `load_backed_adata` is removed; `open_adata` and `open_source` open zarr stores the same way
 - `open_adata` and `open_source` raise one `KeyError` naming every missing rep, obs column and uns key, with what the store has, instead of failing on the first lookup
 - annbatch is installed with its `numba` extra, which it needs to stream in-memory sparse arrays such as a `.h5ad` X

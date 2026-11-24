@@ -40,7 +40,7 @@ def store(request, adata: ad.AnnData, tmp_path: Path) -> Path:
 
 
 def test_reads_only_the_referenced_parts(store: Path, adata: ad.AnnData):
-    opened = open_adata(store, A.X, A.layers["counts"], A.obs["group"], uns=["table"])
+    opened = open_adata(store, A.X, A.layers["counts"], A.obs["group"], uns_keys=["table"])
     assert list(opened.obs.columns) == ["group"] and list(opened.uns) == ["table"]
     assert "counts" in opened.layers and opened.X is not None and list(opened.obsm) == []
     assert list(opened.var_names) == list(adata.var_names)
@@ -68,7 +68,7 @@ def test_a_reference_into_an_array_opens_the_array(store: Path, adata: ad.AnnDat
 
 def test_missing_parts_name_what_the_store_has(store: Path):
     with pytest.raises(KeyError, match=r"obsm\['nope'\] \(has obsm: \['emb'\]\).*obs \['zz'\].*uns \['gone'\]"):
-        open_adata(store, A.obsm["nope"], A.obs["zz"], uns=["gone"])
+        open_adata(store, A.obsm["nope"], A.obs["zz"], uns_keys=["gone"])
 
 
 def test_var_references_are_refused(store: Path):
@@ -77,7 +77,7 @@ def test_var_references_are_refused(store: Path):
 
 
 def test_open_source_reads_h5ad_paths(store: Path, adata: ad.AnnData):
-    (opened,) = open_source([store], A.obsm["emb"], A.obs["group"], uns=["table"])
+    (opened,) = open_source([store], A.obsm["emb"], A.obs["group"], uns_keys=["table"])
     np.testing.assert_allclose(dense(opened.obsm["emb"]), adata.obsm["emb"])
     assert list(opened.obs.columns) == ["group"] and list(opened.uns) == ["table"]
 
@@ -99,7 +99,7 @@ def test_the_obs_index_is_not_a_column(store: Path):
 
 def test_skip_leaves_out_what_the_store_lacks(store: Path):
     opened = open_adata(
-        store, A.obsm["emb"], A.obsm["nope"], A.obs["group"], A.obs["zz"], uns=["table", "gone"], missing="skip"
+        store, A.obsm["emb"], A.obsm["nope"], A.obs["group"], A.obs["zz"], uns_keys=["table", "gone"], missing="skip"
     )
     assert list(opened.obsm) == ["emb"] and list(opened.obs.columns) == ["group"] and list(opened.uns) == ["table"]
 

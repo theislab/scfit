@@ -291,13 +291,13 @@ def _open_store(path):
 
 
 def open_adata(
-    path: str | os.PathLike, *refs, uns: Sequence[str] = (), missing: Literal["raise", "skip"] = "raise"
+    path: str | os.PathLike, *refs, uns_keys: Sequence[str] = (), missing: Literal["raise", "skip"] = "raise"
 ) -> ad.AnnData:
     """Open ``path`` with exactly the parts the :mod:`anndata.acc` references name.
 
     ``A.X``, ``A.layers[k]`` and ``A.obsm[k]`` open arrays; a reference into one, such as
     ``A.obsm["pca"][:, 0]``, opens the whole array. ``A.obs[col]`` reads a column and ``A.obs.index`` the obs
-    names; without it the frame gets a ``RangeIndex``. ``uns`` keys are read into memory.
+    names; without it the frame gets a ``RangeIndex``. ``uns_keys`` are read into memory.
 
     The arrays of a zarr store stay on disk, wrapped by :func:`read_backing` (a dense array passes through,
     a sparse group becomes a ``CSRDataset``), so the loader streams them and a caller reads only the rows it
@@ -313,7 +313,7 @@ def open_adata(
     g = _open_store(path)
     h5ad = not isinstance(g, zarr.Group)
     try:
-        arrays, cols, uns = _present(path, g, arrays, cols, uns, skip=missing == "skip")
+        arrays, cols, uns_keys = _present(path, g, arrays, cols, uns_keys, skip=missing == "skip")
         # zarr: on disk, wrapped for streaming; h5ad: into memory (dense or sparse) before the file closes
         read = ad.io.read_elem if h5ad else read_backing
         opened = {ref: read(g[_path(ref)]) for ref in arrays}
@@ -323,18 +323,18 @@ def open_adata(
             obs.index = pd.Index(ad.io.read_elem(obs_group[obs_group.attrs["_index"]])).astype(str)
         else:
             obs.index = pd.RangeIndex(next(iter(opened.values())).shape[0] if opened else len(obs)).astype(str)
-        return _assemble(g, obs, opened, uns)
+        return _assemble(g, obs, opened, uns_keys)
     finally:
         if h5ad:
             g.close()
 
 
-def open_source(src, *refs, uns: Sequence[str] = ()) -> Container:
+def open_source(src, *refs, uns_keys: Sequence[str] = ()) -> Container:
     """Resolve one :class:`~scfit.data.Stream` source value to a :data:`~scfit.data.Container`.
 
     An in-memory ``AnnData`` or ``DatasetCollection`` passes through unchanged. A path (zarr or ``.h5ad``) is
     opened with :func:`open_adata`, reading only the parts the :mod:`anndata.acc` ``refs`` name and the
-    ``uns`` keys; a zarr annbatch collection root (``encoding-type`` ``"annbatch-preshuffled"``) is not yet
+    ``uns_keys``; a zarr annbatch collection root (``encoding-type`` ``"annbatch-preshuffled"``) is not yet
     supported. A list of paths becomes a list of AnnData (the loader feeds one backing per adata to
     ``add_datasets``).
     """
@@ -343,8 +343,8 @@ def open_source(src, *refs, uns: Sequence[str] = ()) -> Container:
     if isinstance(src, ad.AnnData | DatasetCollection):
         return src
     if isinstance(src, str | os.PathLike):
-        return open_adata(src, *refs, uns=uns)
-    return [a if isinstance(a, ad.AnnData) else open_adata(a, *refs, uns=uns) for a in src]
+        return open_adata(src, *refs, uns_keys=uns_keys)
+    return [a if isinstance(a, ad.AnnData) else open_adata(a, *refs, uns_keys=uns_keys) for a in src]
 
 
 def is_backed_array(arr) -> bool:
