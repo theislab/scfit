@@ -102,3 +102,8 @@ def test_skip_leaves_out_what_the_store_lacks(store: Path):
         store, A.obsm["emb"], A.obsm["nope"], A.obs["group"], A.obs["zz"], uns=["table", "gone"], missing="skip"
     )
     assert list(opened.obsm) == ["emb"] and list(opened.obs.columns) == ["group"] and list(opened.uns) == ["table"]
+
+
+def test_missing_takes_raise_or_skip(store: Path):
+    with pytest.raises(ValueError, match="missing must be"):
+        open_adata(store, A.X, missing="ignore")

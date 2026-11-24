@@ -222,19 +222,22 @@ def _obs_cols(g) -> list[str]:
     return list(g["obs"].attrs["column-order"])  # the on-disk dataframe spec lists its columns
 
 
-def _check_present(where, g, arrays: Sequence[Rep], cols: Sequence[str], uns: Sequence[str]) -> None:
-    """Raise one :class:`KeyError` naming every missing rep, obs column and uns key, with what the store has."""
-    missing = []
-    for ref in arrays:
-        if not _has(g, ref):
+def _present(where, g, arrays: Sequence[Rep], cols: Sequence[str], uns: Sequence[str], *, skip: bool):
+    """The ``(arrays, cols, uns)`` the store has. Unless ``skip``, one :class:`KeyError` names every absent part."""
+    has_cols, has_uns = set(_obs_cols(g)), set(_keys(g.get("uns")))
+    lacks = [r for r in arrays if not _has(g, r)]
+    if not skip:
+        missing = []
+        for ref in lacks:
             field, k = _slot(ref)
             missing.append("X" if k is None else f"{field}[{k!r}] (has {field}: {_keys(g.get(field))})")
-    if absent := sorted(set(cols) - set(_obs_cols(g))):
-        missing.append(f"obs {absent} (has {sorted(_obs_cols(g))})")
-    if absent := sorted(set(uns) - set(_keys(g.get("uns")))):
-        missing.append(f"uns {absent} (has {_keys(g.get('uns'))})")
-    if missing:
-        raise KeyError(f"{where} lacks " + "; ".join(missing))
+        if absent := sorted(set(cols) - has_cols):
+            missing.append(f"obs {absent} (has {sorted(has_cols)})")
+        if absent := sorted(set(uns) - has_uns):
+            missing.append(f"uns {absent} (has {sorted(has_uns)})")
+        if missing:
+            raise KeyError(f"{where} lacks " + "; ".join(missing))
+    return [r for r in arrays if r not in lacks], [c for c in cols if c in has_cols], [k for k in uns if k in has_uns]
 
 
 def _assemble(g, obs: pd.DataFrame, arrays: dict, uns: Sequence[str]) -> ad.AnnData:
@@ -304,16 +307,13 @@ def open_adata(
     A reference the store lacks raises a :class:`KeyError` naming what it has, or with ``missing="skip"`` is left
     out, for a dataset whose files each hold some of the parts.
     """
+    if missing not in ("raise", "skip"):
+        raise ValueError(f'missing must be "raise" or "skip", not {missing!r}.')
     arrays, cols, index = _split_refs(refs)
     g = _open_store(path)
     h5ad = not isinstance(g, zarr.Group)
     try:
-        if missing == "skip":
-            arrays = [r for r in arrays if _has(g, r)]
-            cols = [c for c in cols if c in set(_obs_cols(g))]
-            uns = [k for k in uns if k in _keys(g.get("uns"))]
-        else:
-            _check_present(path, g, arrays, cols, uns)
+        arrays, cols, uns = _present(path, g, arrays, cols, uns, skip=missing == "skip")
         # zarr: on disk, wrapped for streaming; h5ad: into memory (dense or sparse) before the file closes
         read = ad.io.read_elem if h5ad else read_backing
         opened = {ref: read(g[_path(ref)]) for ref in arrays}
