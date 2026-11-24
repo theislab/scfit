@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from scfit.pretrained import load_pretrained, save_pretrained
-from scfit.registry import Component, component
+from modelbinder.pretrained import load_pretrained, save_pretrained
+from modelbinder.registry import Component, component
 
 
 @component("test.pretrained.head")
@@ -34,8 +34,8 @@ def test_round_trips_spec_and_states(tmp_path):
 def test_model_card_tags_every_type(tmp_path):
     save_pretrained(tmp_path, _Model())
     card = (tmp_path / "README.md").read_text()
-    assert "library_name: scfit" in card
-    for tag in ("scfit", "test.pretrained.model", "test.pretrained.head"):
+    assert "library_name: modelbinder" in card
+    for tag in ("modelbinder", "test.pretrained.model", "test.pretrained.head"):
         assert f'- "{tag}"\n' in card
 
 

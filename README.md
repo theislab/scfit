@@ -1,12 +1,12 @@
-# scfit
+# modelbinder
 
 [![Tests][badge-tests]][tests]
 [![Documentation][badge-docs]][documentation]
 
-[badge-tests]: https://img.shields.io/github/actions/workflow/status/selmanozleyen/scfit/test.yaml?branch=main
-[badge-docs]: https://app.readthedocs.org/projects/scfit/badge/
+[badge-tests]: https://img.shields.io/github/actions/workflow/status/theislab/modelbinder/test.yaml?branch=main
+[badge-docs]: https://app.readthedocs.org/projects/modelbinder/badge/
 
-Training models with native annbatch wiring
+Portable component specs (`@component`, on pydantic) and `save_pretrained` / `load_pretrained` in the Hugging Face Hub layout.
 
 ## Getting started
 
@@ -20,20 +20,20 @@ If you don't have Python installed, we recommend installing [uv][].
 
 We recommend managing dependencies in project-specific virtual environments to avoid dependency conflicts.
 This is most convenient using package managers such as [uv][].
-Choose from the options below to install scfit:
+Choose from the options below to install modelbinder:
 
 <!--
-1. Add the latest release of `scfit` from [PyPI][] to your `uv` project:
+1. Add the latest release of `modelbinder` from [PyPI][] to your `uv` project:
 
    ```bash
-   uv add scfit
+   uv add modelbinder
    ```
 
 1. Install the latest release into a [standard virtual environment][venv]:
 
    ```bash
    (after activating your venv)
-   pip install scfit
+   pip install modelbinder
    ```
 
 -->
@@ -41,7 +41,7 @@ Choose from the options below to install scfit:
 1. Install the latest development version:
 
    ```bash
-   pip install git+https://github.com/selmanozleyen/scfit.git  # (or `uv add`)
+   pip install git+https://github.com/theislab/modelbinder.git  # (or `uv add`)
    ```
 
 ## Release notes
@@ -59,10 +59,10 @@ If you found a bug, please use the [issue tracker][].
 
 [uv]: https://github.com/astral-sh/uv
 [scverse discourse]: https://discourse.scverse.org/
-[issue tracker]: https://github.com/selmanozleyen/scfit/issues
-[tests]: https://github.com/selmanozleyen/scfit/actions/workflows/test.yaml
-[documentation]: https://scfit.readthedocs.io
-[changelog]: https://scfit.readthedocs.io/page/changelog.html
-[api documentation]: https://scfit.readthedocs.io/page/api.html
-[pypi]: https://pypi.org/project/scfit
+[issue tracker]: https://github.com/theislab/modelbinder/issues
+[tests]: https://github.com/theislab/modelbinder/actions/workflows/test.yaml
+[documentation]: https://modelbinder.readthedocs.io
+[changelog]: https://modelbinder.readthedocs.io/page/changelog.html
+[api documentation]: https://modelbinder.readthedocs.io/page/api.html
+[pypi]: https://pypi.org/project/modelbinder
 [venv]: https://docs.python.org/3/tutorial/venv.html
