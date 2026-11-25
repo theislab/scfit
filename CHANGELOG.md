@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-25
+
 ### Changed
 
 - Breaking: scfit is renamed modelbinder: `scfit.registry` is `modelbinder.registry` and `scfit.pretrained` is `modelbinder.pretrained`. New model cards say `library_name: modelbinder`; cards written by scfit still load
