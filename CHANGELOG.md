@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+### Changed
+
+- `session-info2` is no longer a dependency
+
 ## [0.1.0] - 2026-11-25
 
 ### Changed

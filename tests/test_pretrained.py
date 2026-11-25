@@ -43,8 +43,6 @@ def test_refuses_to_overwrite(tmp_path):
     save_pretrained(tmp_path, _Model())
     with pytest.raises(FileExistsError):
         save_pretrained(tmp_path, _Model())
-    save_pretrained(tmp_path, _Model(depth=2), overwrite=True)
-    assert load_pretrained(tmp_path)[0] == _Model(depth=2)
 
 
 def test_overwrite_drops_states_of_the_earlier_save(tmp_path):
