@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-11-25
+
 ### Added
 
 - `scfit.data.open_adata(path, *refs, uns_keys=...)` opens a `.zarr` or `.h5ad` store with exactly the parts the `anndata.acc` references name: `A.X`, `A.layers[k]`, `A.obsm[k]` (arrays, on disk for zarr), `A.obs[col]` and `A.obs.index`. A `.h5ad` file's arrays are read into memory and the file is closed
