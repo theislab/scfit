@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError, model_validator
 
-from scfit.registry import Component, PortabilityError, component, config_of, parse, to_spec
+from modelbinder.registry import Component, PortabilityError, component, config_of, parse, to_spec
 
 
 @component("test.widget")

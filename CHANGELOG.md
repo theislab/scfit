@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-25
+
+### Changed
+
+- Breaking: scfit is renamed modelbinder: `scfit.registry` is `modelbinder.registry` and `scfit.pretrained` is `modelbinder.pretrained`. New model cards say `library_name: modelbinder`; cards written by scfit still load
+- Breaking: the data layer `scfit.data` moved to its own package, [boundannbatch](https://github.com/theislab/boundannbatch): `from scfit.data import Loader` is now `from boundannbatch import Loader`. modelbinder no longer depends on annbatch, anndata or zarrs
+
 ## [0.0.14] - 2026-11-25
 
 ### Added

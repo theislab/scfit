@@ -18,7 +18,7 @@ import torch
 from huggingface_hub import snapshot_download
 from safetensors.torch import load_file, save_file
 
-from scfit.registry import Component, parse
+from modelbinder.registry import Component, parse
 
 __all__ = ["save_pretrained", "load_pretrained"]
 
@@ -39,7 +39,7 @@ def save_pretrained(
 
     :raises FileExistsError: If ``path`` already holds a spec and ``overwrite`` is `False`.
     :raises ValueError: If a state name is not a plain folder name, or a state ties tensors.
-    :raises scfit.registry.PortabilityError: If the spec holds a live object.
+    :raises modelbinder.registry.PortabilityError: If the spec holds a live object.
     """
     out = Path(path)
     document = spec.to_spec()
@@ -83,8 +83,8 @@ def _checked(name: str, state: Mapping[str, torch.Tensor]) -> dict[str, torch.Te
 
 
 def _model_card(document: Mapping[str, Any]) -> str:
-    tags = "\n".join(f"- {json.dumps(tag)}" for tag in ["scfit", *sorted(_types(document))])
-    return f"---\nlibrary_name: scfit\ntags:\n{tags}\n---\n\nLoad with `scfit.pretrained.load_pretrained(repo_id)`.\n"
+    tags = "\n".join(f"- {json.dumps(tag)}" for tag in ["modelbinder", *sorted(_types(document))])
+    return f"---\nlibrary_name: modelbinder\ntags:\n{tags}\n---\n\nLoad with `modelbinder.pretrained.load_pretrained(repo_id)`.\n"
 
 
 def _types(value: Any) -> set[str]:

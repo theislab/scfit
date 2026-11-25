@@ -3,8 +3,8 @@ build-backend = "hatchling.build"
 requires = [ "hatch-vcs", "hatchling" ]
 
 [project]
-name = "scfit"
-description = "Component registry + annbatch-native streaming data"
+name = "modelbinder"
+description = "Portable component specs and pretrained weights in the Hugging Face Hub layout"
 readme = "README.md"
 license = { file = "LICENSE" }
 maintainers = [
@@ -22,39 +22,20 @@ classifiers = [
 ]
 dynamic = [ "version" ]
 dependencies = [
-  # The streaming data layer (scfit.data) ships by default; its class samplers come from annbatch.
-  "annbatch[numba]>=0.3.1", # numba: annbatch streams in-memory sparse arrays (an .h5ad X) with it
-  # >=0.13 for the anndata.acc reference system (A.obsm[...] / adata[ref]) used by CouplingDataSchema.
-  "anndata>=0.13",
-  # scfit.pretrained: specs with their weights, in the Hugging Face Hub layout
+  # modelbinder.pretrained: specs with their weights, in the Hugging Face Hub layout
   "huggingface-hub>=0.23",
-  "numpy",
-  "pandas",
-  # the scfit.registry Component specs; >=2.13 for `polymorphic_serialization`.
+  "numpy",                 # safetensors.torch imports it but leaves it to an extra
+  # the modelbinder.registry Component specs; >=2.13 for `polymorphic_serialization`.
   "pydantic>=2.13",
   "safetensors>=0.4",
-  "scikit-learn",
-  "scipy",
   # for debug logging (referenced from the issue template)
   "session-info2",
   "torch>=2",
-  # annbatch's high-performance zarr codec pipeline (zarrs-python) for local-filesystem out-of-core reads;
-  # strongly recommended. Equivalent to annbatch's `zarrs` extra.
-  "zarrs>=0.2.1",
-]
-# GPU-resident streaming: annbatch can keep its read window on-device via cupy (preload_to_gpu) so batches
-# arrive as GPU tensors with no per-step host->device copy. One extra per CUDA major, matching your driver
-# and torch build; annbatch's extras pull cupy with its CUDA toolkit wheels, so no system CUDA is needed.
-optional-dependencies.cupy-cuda12 = [
-  "annbatch[cupy-cuda12]",
-]
-optional-dependencies.cupy-cuda13 = [
-  "annbatch[cupy-cuda13]",
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
-urls.Documentation = "https://scfit.readthedocs.io/"
-urls.Homepage = "https://github.com/theislab/scfit"
-urls.Source = "https://github.com/theislab/scfit"
+urls.Documentation = "https://modelbinder.readthedocs.io/"
+urls.Homepage = "https://github.com/theislab/modelbinder"
+urls.Source = "https://github.com/theislab/modelbinder"
 
 [dependency-groups]
 dev = [
@@ -147,7 +128,6 @@ pythonVersion = "3.12"
 
 [tool.pytest]
 ini_options.testpaths = [ "tests" ]
-ini_options.pythonpath = [ "tests/data" ]  # scheme_helpers.py: shared test helper imported bare by test_split.py
 ini_options.addopts = [
   "--import-mode=importlib", # allow using test files with same name
   "--strict-markers",
@@ -159,7 +139,7 @@ run.omit = [
   "**/test_*.py",
 ]
 run.patch = [ "subprocess" ]
-run.source = [ "scfit" ]
+run.source = [ "modelbinder" ]
 
 [tool.cruft]
 skip = [

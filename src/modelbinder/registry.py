@@ -1,7 +1,7 @@
-"""The component registry and portable specs for scfit, on pydantic.
+"""The component registry and portable specs for modelbinder, on pydantic.
 
 A :class:`Component` is a frozen pydantic model, registered under a stable ``type_id`` with :func:`component`.
-A spec is ``{"type": type_id, **fields}``, plain JSON. Packages built on scfit subclass it, so a family stays
+A spec is ``{"type": type_id, **fields}``, plain JSON. Packages built on modelbinder subclass it, so a family stays
 open: a spec's ``type`` picks the registered class, wherever a field names the family base.
 """
 
