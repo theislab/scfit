@@ -1,6 +1,7 @@
 # Temp files
 .DS_Store
 *~
+buck-out/
 
 # Compiled files
 .venv/
@@ -11,6 +12,8 @@ __pycache__/
 /dist/
 
 # Tests and coverage
+/data/
+/node_modules/
 /.coverage*
 
 # docs

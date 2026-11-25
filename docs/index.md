@@ -9,4 +9,7 @@
 api.md
 changelog.md
 contributing.md
+references.md
+
+notebooks/example
 ```
