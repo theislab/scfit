@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from scfit.data._io import _read_rows
-from scfit.data._schema import _LEAF, _PRIMARY, _ROWS, Stream, Weights, validate_links
+from scfit.data._schema import _LEAF, _PRIMARY, _ROWS, Rep, Stream, Weights, validate_links
 from scfit.data._source import Source, build_sources, resolve_source
 
 __all__ = ["EvalLoader"]
@@ -98,21 +98,23 @@ class EvalLoader:
             return np.sort(rng.choice(rows, size=self._max, replace=False))
         return self._subsample(rows, self._max, rng)  # custom callable
 
-    def _read(self, src: Source, reps: tuple[str, ...], rows: np.ndarray) -> dict[str, object]:
+    def _read(self, src: Source, reps: tuple[Rep, ...], rows: np.ndarray) -> dict[Rep, object]:
         """Read the given global ``rows`` for each rep of a stream (optionally as torch tensors).
 
         ``reps=()`` reads nothing and returns ``{}`` — a metadata-only stream, contributing just its leaf.
         On the primary that is a prediction pass with no known target state: every covariate combination
         enumerated, with linked streams still supplying real cells (e.g. matched controls) as model input.
         """
-        arrays: dict[str, object] = {loc: _read_rows(src.adatas, loc, rows) for loc in reps}
+        arrays: dict[Rep, object] = {ref: _read_rows(src.adatas, ref, rows) for ref in reps}
         if self._to == "torch":
-            arrays = {loc: torch.as_tensor(np.asarray(a)) for loc, a in arrays.items()}
+            arrays = {ref: torch.as_tensor(np.asarray(a)) for ref, a in arrays.items()}
         return arrays
 
     # ── iteration ──────────────────────────────────────────────────────────
     def __iter__(self) -> Iterator[dict]:
-        """Yield one batch per primary leaf: ``{"primary": {loc: rows}, <link>: {...}, "leaf": <tuple>, "rows": {...}}``.
+        """Yield one batch per primary leaf: ``{"primary": {rep: rows}, <link>: {...}, "leaf": <tuple>, "rows": {...}}``.
+
+        Reps are keyed by the stream's :mod:`anndata.acc` references, as for :class:`~scfit.data.Loader`.
 
         ``rows`` maps each stream to the int64 global rows it read (its source's files concatenated in order).
         """

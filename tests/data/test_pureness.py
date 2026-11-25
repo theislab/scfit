@@ -10,6 +10,7 @@ from __future__ import annotations
 from itertools import islice
 
 import pytest
+from anndata.acc import A
 from scheme_helpers import encoded_adata, only_leaf, perturbation_loader, rep
 
 
@@ -25,6 +26,6 @@ from scheme_helpers import encoded_adata, only_leaf, perturbation_loader, rep
 def test_every_batch_is_leaf_pure(read: dict):
     # runs of 16 per leaf (>= the largest chunk_size) so chunked reads stay within one leaf
     adata = encoded_adata(("A", "B"), ("control", "d1", "d2", "d3"), n_per_combo=16)
-    for batch in islice(perturbation_loader(adata, **read), 40):
-        only_leaf(rep(batch, "primary"))  # primary: raises if the batch mixes leaves
-        only_leaf(rep(batch, "ctrl"))  # source: matched control, also one leaf
+    for batch in islice(perturbation_loader(adata, **read, rep=A.X), 40):
+        only_leaf(rep(batch, "primary", A.X))  # primary: raises if the batch mixes leaves
+        only_leaf(rep(batch, "ctrl", A.X))  # source: matched control, also one leaf

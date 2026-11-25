@@ -1,5 +1,7 @@
-"""Public data spec: the :class:`Stream` that :class:`~scfit.data.Loader` and
-:class:`~scfit.data.EvalLoader` consume, plus the :class:`~scfit.data.Loader`'s :class:`SamplerParams`.
+"""Public data spec: :class:`Stream`, :class:`SamplerParams` and the rep references they use.
+
+:class:`~scfit.data.Loader` and :class:`~scfit.data.EvalLoader` consume a :class:`Stream`, whose reps are
+:mod:`anndata.acc` references (``A.X``, ``A.layers[k]``, ``A.obsm[k]``).
 """
 
 from __future__ import annotations
@@ -8,15 +10,18 @@ from collections.abc import Mapping, Sequence
 
 import anndata as ad
 import numpy as np
+from anndata.acc import AdRef, LayerAcc, MultiAcc
 from pydantic import BaseModel, ConfigDict, PositiveInt
 
 type Container = ad.AnnData | list[ad.AnnData]
+# A whole array of an AnnData, as an :mod:`anndata.acc` reference: ``A.X``, ``A.layers[k]`` or ``A.obsm[k]``.
+type Rep = LayerAcc | MultiAcc
 
 # The selection: {group -> weight} (a group is a ``group_by`` tuple). A group absent, or with weight 0, is
 # excluded — that IS the selection, native to annbatch's ClassSampler. ``None`` means uniform over every group.
 Weights = Mapping[tuple, float]
 
-__all__ = ["Container", "SamplerParams", "Stream", "Weights", "weight_vector"]
+__all__ = ["Container", "Rep", "SamplerParams", "Stream", "Weights", "weight_vector"]
 
 # Reserved name of the root / target (primary) stream — shared by Loader and EvalLoader.
 _PRIMARY = "primary"
@@ -26,6 +31,18 @@ _LEAVES = "leaves"
 _LEAF = "leaf"
 _ROWS = "rows"
 _RESERVED = (_PRIMARY, _LEAVES, _LEAF, _ROWS)
+
+
+def _slot(ref: Rep) -> tuple[str, str | None]:
+    """Where a whole-array reference lives on an AnnData: ``("X", None)``, ``("layers", k)`` or ``("obsm", k)``."""
+    match ref:
+        case LayerAcc(k=None):
+            return "X", None
+        case LayerAcc(k=k):
+            return "layers", k
+        case MultiAcc(dim="obs", k=k):
+            return "obsm", k
+    raise ValueError(f"{ref!r} is not A.X, A.layers[k] or A.obsm[k].")
 
 
 class SamplerParams(BaseModel):
@@ -82,9 +99,10 @@ class Stream:
         Columns whose unique combinations define the groups sampled (the leaves). ``()`` makes every cell one
         group, whose leaf is ``()``.
     reps
-        Representation location(s) to stream — a loc string ``"X"`` / ``"obsm/<k>"`` / ``"layers/<k>"``, or a
-        tuple of them for several **aligned** reps of the same cells. ``()`` is **metadata-only** — no cell
-        matrix is read and the stream contributes only its leaf, for a prediction pass over covariate
+        Array(s) to stream, as :mod:`anndata.acc` references, required — ``A.X``, ``A.layers[k]`` or
+        ``A.obsm[k]`` — or a tuple of them for several **aligned** reps of the same cells. Batches are keyed by
+        these references. A config string resolves with ``A.resolve("obsm.X_pca", vec=False)``. ``()`` is
+        **metadata-only** — no cell matrix is read and the stream contributes only its leaf, for a prediction pass over covariate
         combinations with no known target state (:class:`~scfit.data.EvalLoader` only).
     weights
         ``{group: weight}`` (a group is a ``group_by`` tuple); a group absent or with weight 0 is excluded.
@@ -102,7 +120,7 @@ class Stream:
         source_key: str | Sequence[str],
         *,
         group_by: Sequence[str],
-        reps: str | Sequence[str] = "X",
+        reps: Rep | Sequence[Rep],
         weights: Weights | None = None,
         match_on: Sequence[str] = (),
         in_memory: bool = False,
@@ -113,14 +131,18 @@ class Stream:
         if len(set(keys)) != len(keys):
             raise ValueError(f"Stream.source_key has duplicate keys: {source_key!r}.")
         group_by = tuple(group_by)
-        if isinstance(reps, str):
-            reps = (reps,)
-        elif isinstance(reps, tuple | list):
-            reps = tuple(reps)  # `()` is legal: a metadata-only stream (see the `reps` docstring)
-        else:
-            raise ValueError(f"Stream.reps must be a loc string or a sequence of loc strings (got {reps!r}).")
-        if not all(isinstance(r, str) and r for r in reps):
-            raise ValueError('Stream.reps entries must be non-empty loc strings ("X" / "obsm/<k>" / …).')
+        reps = tuple(reps) if isinstance(reps, tuple | list) else (reps,)  # `()`: metadata-only
+        for r in reps:
+            if isinstance(r, str):
+                raise ValueError(
+                    f"Stream.reps takes anndata.acc references, not strings (got {r!r}): use anndata.acc.A, e.g. "
+                    'A.obsm["X_pca"], or A.resolve("obsm.X_pca", vec=False) for a config string.'
+                )
+            if isinstance(r, AdRef):
+                raise ValueError(
+                    f"Stream.reps entry {r!r} is not a whole array: streams read A.X, A.layers[k] or A.obsm[k]."
+                )
+            _slot(r)
         if weights is not None:
             for k in weights:
                 if len(k) != len(group_by):
@@ -131,7 +153,7 @@ class Stream:
         self.source_key = source_key
         self.source_keys: tuple[str, ...] = keys  # normalized; one, or several to unify over
         self.group_by = group_by
-        self.reps: tuple[str, ...] = reps
+        self.reps: tuple[Rep, ...] = reps
         self.weights = weights
         self.match_on = tuple(match_on)
         self.in_memory = in_memory

@@ -1,6 +1,7 @@
 import anndata as ad
 import numpy as np
 import pandas as pd
+from anndata.acc import A
 
 from scfit.data import EvalLoader, Stream
 
@@ -25,13 +26,13 @@ def test_full_pass_is_deterministic_and_matched():
     primary = Stream(
         "d",
         group_by=["cell_line", "drug"],
-        reps=("X",),
+        reps=(A.X,),
         weights={(cl, dr): 1.0 for cl in CELL_LINES for dr in ("d1", "d2")},
     )
     control = Stream(
         "d",
         group_by=["cell_line", "drug"],
-        reps=("X",),
+        reps=(A.X,),
         weights={(cl, "control"): 1.0 for cl in CELL_LINES},
         match_on=["cell_line"],
     )
@@ -44,8 +45,9 @@ def test_full_pass_is_deterministic_and_matched():
         seen.append((cl, dr))
         pert = np.flatnonzero((obs.cell_line == cl) & (obs.drug == dr))
         ctrl = np.flatnonzero((obs.cell_line == cl) & (obs.drug == "control"))
-        assert np.array_equal(batch["primary"]["X"], adata.X[pert])
-        assert np.array_equal(batch["control"]["X"], adata.X[ctrl])  # matched, controls-only
+        assert list(batch["primary"]) == [A.X] and list(batch["control"]) == [A.X]  # keyed by reference
+        assert np.array_equal(batch["primary"][A.X], adata.X[pert])
+        assert np.array_equal(batch["control"][A.X], adata.X[ctrl])  # matched, controls-only
         assert np.array_equal(batch["rows"]["primary"], pert) and np.array_equal(batch["rows"]["control"], ctrl)
     assert set(seen) == {(cl, dr) for cl in CELL_LINES for dr in ("d1", "d2")}
 
@@ -53,12 +55,12 @@ def test_full_pass_is_deterministic_and_matched():
 def test_max_per_group_deduplicates_to_unique_combos():
     """max_per_group=1 yields exactly one representative per group (the unique group_by combos)."""
     adata = _adata()
-    stream = Stream("d", group_by=["cell_line", "drug"], reps=("X",))  # no weights -> every group
+    stream = Stream("d", group_by=["cell_line", "drug"], reps=(A.X,))  # no weights -> every group
     loader = EvalLoader({"d": adata}, primary=stream, max_per_group=1)
 
     batches = list(loader)
     assert len(loader) == len(batches) == len(CELL_LINES) * len(DRUGS)
-    assert all(b["primary"]["X"].shape[0] == 1 for b in batches)
+    assert all(b["primary"][A.X].shape[0] == 1 for b in batches)
     assert {b["leaf"] for b in batches} == {(cl, dr) for cl in CELL_LINES for dr in DRUGS}
 
 
@@ -75,7 +77,7 @@ def test_metadata_only_primary_reads_no_cells_but_still_matches():
     control = Stream(
         "d",
         group_by=["cell_line", "drug"],
-        reps=("X",),
+        reps=(A.X,),
         weights={(cl, "control"): 1.0 for cl in CELL_LINES},
         match_on=["cell_line"],
     )
@@ -88,7 +90,7 @@ def test_metadata_only_primary_reads_no_cells_but_still_matches():
         assert b["primary"] == {}  # nothing read for the primary
         cl, _ = b["leaf"]
         ctrl = np.flatnonzero((obs.cell_line == cl) & (obs.drug == "control"))
-        assert np.array_equal(b["control"]["X"], adata.X[ctrl])  # links unaffected
+        assert np.array_equal(b["control"][A.X], adata.X[ctrl])  # links unaffected
 
 
 def test_metadata_only_needs_no_rep_on_disk():
@@ -101,10 +103,10 @@ def test_metadata_only_needs_no_rep_on_disk():
 def test_random_subsample_is_reproducible_and_capped():
     """subsample="random" caps each group and gives the same draw across passes for a fixed seed."""
     adata = _adata(n_per_combo=8)
-    stream = Stream("d", group_by=["cell_line", "drug"], reps=("X",))
+    stream = Stream("d", group_by=["cell_line", "drug"], reps=(A.X,))
     runs = [
         list(EvalLoader({"d": adata}, primary=stream, max_per_group=3, subsample="random", seed=0)) for _ in range(2)
     ]
-    assert all(b["primary"]["X"].shape[0] == 3 for b in runs[0])  # capped to N
+    assert all(b["primary"][A.X].shape[0] == 3 for b in runs[0])  # capped to N
     for x, y in zip(runs[0], runs[1], strict=True):
-        assert np.array_equal(x["primary"]["X"], y["primary"]["X"])  # reproducible for a fixed seed
+        assert np.array_equal(x["primary"][A.X], y["primary"][A.X])  # reproducible for a fixed seed

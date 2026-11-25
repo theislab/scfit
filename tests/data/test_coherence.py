@@ -11,6 +11,7 @@ from __future__ import annotations
 import anndata as ad
 import numpy as np
 import pandas as pd
+from anndata.acc import A
 from scheme_helpers import (
     CONTROL,
     DRUGS,
@@ -35,12 +36,12 @@ COLS = ("cell_line", "drug")
 
 def test_primary_label_and_context_coherent():
     """Every stream's reported ``leaves`` entry is exactly the group its rows decode to."""
-    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16))
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), rep=A.X)
     line_code, drug_code = codes(LINES), codes(DRUGS)
     it = iter(loader)
     for _ in range(12):
         b = next(it)
-        tgt, src = rep(b, "primary"), rep(b, "ctrl")
+        tgt, src = rep(b, "primary", A.X), rep(b, "ctrl", A.X)
         line, drug = only_leaf(tgt)  # primary batch is one perturbed condition
         assert tgt[0, IS_CONTROL] == 0.0, "primary must be perturbed (not control)"
         p_leaf = b["leaves"]["primary"]  # the group the primary drew — index your own encodings with it
@@ -52,34 +53,34 @@ def test_primary_label_and_context_coherent():
 
 
 def test_reps_from_distinct_stores_are_the_same_cells():
-    # obsm/rep is a DISTINCT payload (not a copy of X) still carrying each cell's ROW_ID, so we can prove
-    # the "obsm/rep" loader reads its own array AND draws the same cells, in the same order, as "X".
+    # obsm["rep"] is a DISTINCT payload (not a copy of X) still carrying each cell's ROW_ID, so we can prove
+    # the A.obsm["rep"] loader reads its own array AND draws the same cells, in the same order, as "X".
     adata = encoded_adata(LINES, DRUGS, 16)
     rid = adata.X[:, ROW_ID]
     adata.obsm["rep"] = np.stack([rid, -rid], axis=1).astype("float32")
-    loader = perturbation_loader(adata, rep=("X", "obsm/rep"), ctrl_rep="X")
+    loader = perturbation_loader(adata, rep=(A.X, A.obsm["rep"]), ctrl_rep=A.X)
     for _ in range(loader.n_batches):
         reps = next(iter(loader))["primary"]
-        x, r = np.asarray(reps["X"]), np.asarray(reps["obsm/rep"])
+        x, r = np.asarray(reps[A.X]), np.asarray(reps[A.obsm["rep"]])
         np.testing.assert_array_equal(r[:, 0], x[:, ROW_ID])  # same cell per position (row-for-row)
-        np.testing.assert_array_equal(r[:, 1], -x[:, ROW_ID])  # and it really is obsm/rep, not X again
+        np.testing.assert_array_equal(r[:, 1], -x[:, ROW_ID])  # and it really is obsm["rep"], not X again
 
 
 def test_source_reps_are_aligned_same_cells():
     # aligned reps apply to the control link too — its reps read the same control cells.
-    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16, obsm_rep=True), rep="X", ctrl_rep=("X", "obsm/rep"))
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16, obsm_rep=True), rep=A.X, ctrl_rep=(A.X, A.obsm["rep"]))
     reps = next(iter(loader))["ctrl"]
-    np.testing.assert_array_equal(np.asarray(reps["X"])[:, ROW_ID], np.asarray(reps["obsm/rep"])[:, ROW_ID])
+    np.testing.assert_array_equal(np.asarray(reps[A.X])[:, ROW_ID], np.asarray(reps[A.obsm["rep"]])[:, ROW_ID])
 
 
 def test_more_than_two_reps_all_aligned():
     adata = encoded_adata(LINES, DRUGS, 16, obsm_rep=True)  # adds obsm["rep"]
     adata.obsm["rep2"] = adata.X.copy()
-    loader = perturbation_loader(adata, rep=("X", "obsm/rep", "obsm/rep2"), ctrl_rep="X")
+    loader = perturbation_loader(adata, rep=(A.X, A.obsm["rep"], A.obsm["rep2"]), ctrl_rep=A.X)
     reps = next(iter(loader))["primary"]
-    x = np.asarray(reps["X"])[:, ROW_ID]
-    np.testing.assert_array_equal(np.asarray(reps["obsm/rep"])[:, ROW_ID], x)
-    np.testing.assert_array_equal(np.asarray(reps["obsm/rep2"])[:, ROW_ID], x)
+    x = np.asarray(reps[A.X])[:, ROW_ID]
+    np.testing.assert_array_equal(np.asarray(reps[A.obsm["rep"]])[:, ROW_ID], x)
+    np.testing.assert_array_equal(np.asarray(reps[A.obsm["rep2"]])[:, ROW_ID], x)
 
 
 def test_multiple_links_are_keyed_by_name():
@@ -93,11 +94,16 @@ def test_multiple_links_are_keyed_by_name():
     loader = Loader(
         {KEY: adata},
         primary=Stream(
-            KEY, group_by=("line", "drug"), weights=uniform([(ln, dr) for ln in ("A", "B") for dr in ("d1", "d2")])
+            KEY,
+            reps=A.X,
+            group_by=("line", "drug"),
+            weights=uniform([(ln, dr) for ln in ("A", "B") for dr in ("d1", "d2")]),
         ),
         links={
-            "on_line": Stream(KEY, group_by=("line",), match_on=("line",), weights=uniform([("A",), ("B",)])),
-            "on_drug": Stream(KEY, group_by=("drug",), match_on=("drug",), weights=uniform([("d1",), ("d2",)])),
+            "on_line": Stream(KEY, reps=A.X, group_by=("line",), match_on=("line",), weights=uniform([("A",), ("B",)])),
+            "on_drug": Stream(
+                KEY, reps=A.X, group_by=("drug",), match_on=("drug",), weights=uniform([("d1",), ("d2",)])
+            ),
         },
         sampler={"batch_size": 8, "chunk_size": 1, "preload_nchunks": 8},
         seed=0,
@@ -106,20 +112,20 @@ def test_multiple_links_are_keyed_by_name():
     streams = {"primary", "on_line", "on_drug"}
     assert set(b) == streams | {"leaves", "rows"}  # every stream present, keyed by name (no clobber)
     assert set(b["leaves"]) == streams  # and each reports the group it drew
-    tgt = rep(b, "primary")
-    assert (rep(b, "on_line")[:, 0] == tgt[0, 0]).all()  # on_line matched on the line column
-    assert (rep(b, "on_drug")[:, 1] == tgt[0, 1]).all()  # on_drug matched on the drug column
+    tgt = rep(b, "primary", A.X)
+    assert (rep(b, "on_line", A.X)[:, 0] == tgt[0, 0]).all()  # on_line matched on the line column
+    assert (rep(b, "on_drug", A.X)[:, 1] == tgt[0, 1]).all()  # on_drug matched on the drug column
 
 
 def test_match_on_empty_is_unconditional():
     # match_on=() ⇒ the control is drawn independently, so over many batches its cell line decouples from
     # the primary's — while still being a control group.
-    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), ctrl_match_on=())
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), ctrl_match_on=(), rep=A.X)
     pairs = set()
     for _ in range(40):
         b = next(iter(loader))
-        assert (rep(b, "ctrl")[:, IS_CONTROL] == 1.0).all(), "ctrl must still be a control group"
-        pairs.add((only_leaf(rep(b, "primary"))[0], only_leaf(rep(b, "ctrl"))[0]))
+        assert (rep(b, "ctrl", A.X)[:, IS_CONTROL] == 1.0).all(), "ctrl must still be a control group"
+        pairs.add((only_leaf(rep(b, "primary", A.X))[0], only_leaf(rep(b, "ctrl", A.X))[0]))
     assert any(t != c for t, c in pairs), "match_on=() must let the control decouple from the primary cell line"
 
 
@@ -130,10 +136,11 @@ def test_per_stream_batch_sizes_differ():
     ctrl = uniform([(cl, CONTROL) for cl in LINES])
     loader = Loader(
         {KEY: adata},
-        primary=Stream(KEY, group_by=COLS, weights=pert),
+        primary=Stream(KEY, reps=A.X, group_by=COLS, weights=pert),
         links={
             "ctrl": Stream(
                 KEY,
+                reps=A.X,
                 group_by=COLS,
                 match_on=("cell_line",),
                 weights=ctrl,
@@ -144,14 +151,14 @@ def test_per_stream_batch_sizes_differ():
         seed=0,
     )
     b = next(iter(loader))
-    assert rep(b, "primary").shape[0] == 8 and rep(b, "ctrl").shape[0] == 4
+    assert rep(b, "primary", A.X).shape[0] == 8 and rep(b, "ctrl", A.X).shape[0] == 4
 
 
 def test_materialize_node_selects_positive_weight_rows():
     from scfit.data._io import leaf_codes, materialize_node
 
     adata = encoded_adata(LINES, DRUGS, 16)
-    _, links = perturbation_streams(adata)
+    _, links = perturbation_streams(adata, rep=A.X)
     mem, sub_codes, sub_leaves = materialize_node(adata, links["ctrl"])  # materialize_node takes a Stream now
     assert isinstance(mem, ad.AnnData)
     assert (mem.obs["drug"] == "control").all()  # only positive-weight (control) rows materialized
@@ -163,9 +170,9 @@ def test_materialize_node_selects_positive_weight_rows():
 
 
 def test_in_memory_control_materialized():
-    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), ctrl_in_memory=True)
+    loader = perturbation_loader(encoded_adata(LINES, DRUGS, 16), ctrl_in_memory=True, rep=A.X)
     materialized = loader._resolved["ctrl"]  # control materialized into a RAM-backed Source
     assert isinstance(materialized, Source)
     assert isinstance(materialized.adatas[0].X, np.ndarray)  # dense, in-memory (not a backing)
     b = next(iter(loader))
-    assert (rep(b, "ctrl")[:, IS_CONTROL] == 1.0).all()  # served from memory, still matched controls
+    assert (rep(b, "ctrl", A.X)[:, IS_CONTROL] == 1.0).all()  # served from memory, still matched controls

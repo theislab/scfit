@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 from annbatch import Loader as AnnbatchLoader  # annbatch's low-level per-rep loader (not scfit's `Loader`)
 from annbatch.samplers import ClassSampler
+from anndata.acc import A
 
 from scfit.data._bound_sampler import BoundClassSampler
 from scfit.data._io import is_backed_array, open_source
@@ -23,6 +24,7 @@ from scfit.data._schema import (
     _LEAVES,
     _PRIMARY,
     _ROWS,
+    Rep,
     SamplerParams,
     Stream,
     validate_links,
@@ -38,7 +40,8 @@ _ROW = "row"  # the obs column each per-rep annbatch loader carries: every row's
 class Loader:
     """An infinite stream of matched batches — the primary plus its links, keyed by stream name.
 
-    A batch is ``{stream name: {rep loc: rows}}`` for the primary and every link, plus ``"leaves"``
+    A batch is ``{stream name: {rep: rows}}`` for the primary and every link, keyed by the stream's
+    :mod:`anndata.acc` references (``batch["primary"][A.obsm["X_pca"]]``), plus ``"leaves"``
     (``{stream name: <group_by tuple>}`` — the group each stream drew) and ``"rows"`` (``{stream name:
     <int64 global rows>}``, aligned with the reps; a row indexes the source's files concatenated in order). Side arrays keyed by group (a
     perturbation encoding, a dose vector) are the *consumer's*: index them with that leaf.
@@ -46,7 +49,7 @@ class Loader:
     A fresh epoch rolls each pass; :meth:`set_n_iters` only inserts a pause point, it never restarts.
     Streams address their data by ``source_key`` into ``sources``; each key resolves to one
     :class:`~scfit.data._source.Source` owning that dataset's obs factorization, shared by every stream
-    naming it. :meth:`from_paths` builds that mapping from zarr paths.
+    naming it. :meth:`from_paths` builds that mapping from zarr or ``.h5ad`` paths.
 
     Every stream reads with ``sampler``. ``stream_samplers`` gives a named stream its own
     :class:`~scfit.data.SamplerParams` instead; that entry replaces ``sampler`` for the stream rather than
@@ -135,7 +138,7 @@ class Loader:
         # sampler that must agree within a pass IS a deepcopy of one seeded oracle — that is what keeps them in
         # lockstep, makes a stream's reps read the same rows, and lets a pickled loader resume the same stream.
         self._oracle_sampler = self._new_class_sampler(_PRIMARY)
-        self._loaders: dict[str, dict[str, AnnbatchLoader]] = {
+        self._loaders: dict[str, dict[Rep, AnnbatchLoader]] = {
             _PRIMARY: self._build_per_rep_loaders(_PRIMARY, deepcopy(self._oracle_sampler))
         }
         for name in self._links:
@@ -146,7 +149,7 @@ class Loader:
             )
             self._loaders[name] = self._build_per_rep_loaders(name, link_sampler)
 
-        self._iters: dict[str, dict[str, Iterator[dict]]] | None = None
+        self._iters: dict[str, dict[Rep, Iterator[dict]]] | None = None
         self._pos = 0  # position within the current epoch (drives the epoch roll)
         self._since_pause = 0  # batches yielded since the last StopIteration, vs ``n_iters``
 
@@ -176,23 +179,19 @@ class Loader:
         sampler: SamplerParams | Mapping[str, int],
         stream_samplers: Mapping[str, SamplerParams | Mapping[str, int]] | None = None,
     ) -> Loader:
-        """Build a :class:`Loader` from zarr ``{source_key: path | [paths]}``, opened backed.
+        """Build a :class:`Loader` from ``{source_key: path | [paths]}`` (zarr opened backed, or ``.h5ad``).
 
-        Each path is opened reading only the **union** of the reps and ``group_by`` columns the streams
-        naming that ``source_key`` actually use (via :func:`~scfit.data._io.open_source`) — so obs columns
-        nobody groups on are never touched. Everything else matches :meth:`__init__`.
+        Each path is opened reading only the **union** of the reps and the ``group_by`` / ``match_on``
+        columns of the streams naming that ``source_key`` (via :func:`~scfit.data.open_source`) — so obs
+        columns nobody groups on are never touched. Everything else matches :meth:`__init__`.
         """
         streams = {_PRIMARY: primary, **dict(links or {})}
-        reps: dict[str, set] = {}
-        cols: dict[str, set] = {}
+        refs: dict[str, dict] = {}  # per source_key, an ordered set of references
         for s in streams.values():
             for k in s.source_keys:
-                reps.setdefault(k, set()).update(s.reps)
-                cols.setdefault(k, set()).update(s.group_by)
-        sources = {
-            k: open_source(p, keys=sorted(reps.get(k, ())), cols=sorted(cols.get(k, ())))
-            for k, p in dict(paths).items()
-        }
+                # match_on is a subset of group_by, so group_by covers the columns links match on
+                refs.setdefault(k, {}).update(dict.fromkeys([*s.reps, *(A.obs[c] for c in s.group_by)]))
+        sources = {k: open_source(p, *refs.get(k, ())) for k, p in dict(paths).items()}
         return cls(
             sources,
             primary=primary,
@@ -241,23 +240,23 @@ class Loader:
         except ValueError as e:
             raise ValueError(f"stream {name!r}: {e}") from e
 
-    def _build_per_rep_loaders(self, name: str, sampler: ClassSampler | BoundClassSampler) -> dict[str, AnnbatchLoader]:
+    def _build_per_rep_loaders(self, name: str, sampler: ClassSampler | BoundClassSampler) -> dict[Rep, AnnbatchLoader]:
         # One annbatch Loader per rep; each deepcopies the sampler so the reps stay aligned. Each file carries
         # its global row numbers as obs (`_ROW`), so a batch reports the rows it read, and through `codes` its group.
         src, s, to = self._resolved[name], self._streams[name], self._to
-        loaders: dict[str, AnnbatchLoader] = {}
-        for loc in s.reps:
+        loaders: dict[Rep, AnnbatchLoader] = {}
+        for ref in s.reps:
             base = AnnbatchLoader(
                 batch_sampler=deepcopy(sampler), return_index=False, to=to, preload_to_gpu=self._preload_to_gpu
             )
-            backings = src.rep(loc)
+            backings = src.rep(ref)
             offsets = np.cumsum([0, *(b.shape[0] for b in backings)])
             obs = [
                 pd.DataFrame({_ROW: np.arange(a, b, dtype=np.int64)}, index=np.arange(a, b).astype(str))
                 for a, b in itertools.pairwise(offsets)
             ]
             # in-memory arrays → add_adatas (X wrapper); backed (zarr / CSRDataset) → add_datasets
-            loaders[loc] = (
+            loaders[ref] = (
                 base.add_adatas([ad.AnnData(X=b, obs=o) for b, o in zip(backings, obs, strict=True)])
                 if not is_backed_array(backings[0])
                 else base.add_datasets(backings, obs=obs)
@@ -286,15 +285,15 @@ class Loader:
     # that raises half the time is worse than none. Read ``n_iters`` / ``n_batches`` directly if you need a count.
 
     def _stream_next(self, name: str) -> tuple[dict, np.ndarray, tuple]:
-        """A stream's aligned reps ``{rep loc: rows}``, its global ``rows`` and the ``leaf`` it drew.
+        """A stream's aligned reps ``{rep: rows}``, its global ``rows`` and the ``leaf`` it drew.
 
         Identical samplers pick the same aligned rows for every rep. A batch is one class, so its first row's
         leaf code is the batch's leaf.
         """
         reps, rows = {}, None
-        for loc in self._streams[name].reps:
-            batch = next(self._iters[name][loc])
-            reps[loc], rows = batch["X"], batch["obs"][_ROW].to_numpy()
+        for ref in self._streams[name].reps:
+            batch = next(self._iters[name][ref])
+            reps[ref], rows = batch["X"], batch["obs"][_ROW].to_numpy()
         f = self._f[name]
         return reps, rows, f.leaves[f.codes[rows[0]]]
 
@@ -307,7 +306,7 @@ class Loader:
             # epoch (first pass, next epoch, or resume after unpickling). Independent of ``n_iters``: a pause
             # mid-epoch leaves ``_pos`` alone, so the next pass picks the epoch up where it stopped.
             self._iters = {
-                name: {loc: iter(ld) for loc, ld in loaders.items()} for name, loaders in self._loaders.items()
+                name: {ref: iter(ld) for ref, ld in loaders.items()} for name, loaders in self._loaders.items()
             }
             self._pos = 0
         self._pos += 1

@@ -14,6 +14,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
+from anndata.acc import A
 from scheme_helpers import KEY, encoded_adata, only_leaf, rep, uniform
 
 from scfit.data import Loader, Stream
@@ -24,7 +25,7 @@ COLS = ("cell_line", "drug")
 def _primary_only(adata, weights, *, batch_size=8, chunk_size=1, preload_nchunks=8, n_iters=None) -> Loader:
     loader = Loader(
         {KEY: adata},
-        primary=Stream(KEY, group_by=COLS, weights=weights),
+        primary=Stream(KEY, reps=A.X, group_by=COLS, weights=weights),
         seed=0,
         sampler={"batch_size": batch_size, "chunk_size": chunk_size, "preload_nchunks": preload_nchunks},
     )
@@ -55,10 +56,10 @@ def test_n_iters_pauses_rather_than_restarts():
     # 3 passes of 4 must yield exactly the same 12 batches as one uncapped run of 12.
     adata = encoded_adata(("A", "B"), ("d1", "d2", "d3"), n_per_combo=16)
     weights = uniform([(cl, dr) for cl in ("A", "B") for dr in ("d1", "d2", "d3")])
-    uncapped = [rep(b, "primary") for b in islice(_primary_only(adata, weights), 12)]
+    uncapped = [rep(b, "primary", A.X) for b in islice(_primary_only(adata, weights), 12)]
 
     capped = _primary_only(adata, weights, n_iters=4)
-    resumed = [rep(b, "primary") for _ in range(3) for b in capped]  # 3 consecutive passes
+    resumed = [rep(b, "primary", A.X) for _ in range(3) for b in capped]  # 3 consecutive passes
     assert len(resumed) == 12
     for got, want in zip(resumed, uncapped, strict=True):
         assert np.array_equal(got, want)
@@ -131,7 +132,7 @@ def test_noncontiguous_leaf_is_fully_sampled():
     )
     seen: set[int] = set()
     for b in islice(loader, 400):
-        tgt = rep(b, "primary")
+        tgt = rep(b, "primary", A.X)
         if only_leaf(tgt)[1] == 0:  # a (A, d1) batch
             seen.update(tgt[:, 3].astype(int).tolist())  # collect its ROW_IDs
     assert any(r < 8 for r in seen) and any(r >= 16 for r in seen), "both runs of (A, d1) must be sampled"
