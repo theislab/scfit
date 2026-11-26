@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-26
+
 ### Removed
 
 - Breaking: the module-level `registry.to_spec(config)` and `registry.parse(spec)`; use `config.to_spec()` and `Component.from_spec(spec)` (or `Family.from_spec(spec)`, which also checks the family)
