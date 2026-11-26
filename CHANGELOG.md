@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning][].
 
 ## [Unreleased]
 
+### Removed
+
+- Breaking: the module-level `registry.to_spec(config)` and `registry.parse(spec)`; use `config.to_spec()` and `Component.from_spec(spec)` (or `Family.from_spec(spec)`, which also checks the family)
+- Breaking: `@component(..., builds=Impl)` and `registry.config_of`; what a config builds is typed by its `build` return annotation
+
 ## [0.1.0] - 2026-11-25
 
 ### Changed

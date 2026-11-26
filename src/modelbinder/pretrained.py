@@ -18,7 +18,7 @@ import torch
 from huggingface_hub import snapshot_download
 from safetensors.torch import load_file, save_file
 
-from modelbinder.registry import Component, parse
+from modelbinder.registry import Component
 
 __all__ = ["save_pretrained", "load_pretrained"]
 
@@ -66,7 +66,7 @@ def load_pretrained(
         if isinstance(path_or_repo_id, Path) or src.exists() or str(path_or_repo_id).startswith((".", "/", "~")):
             raise FileNotFoundError(f"No saved folder at {src}.")
         src = Path(snapshot_download(str(path_or_repo_id), revision=revision))
-    spec = parse(json.loads((src / CONFIG_NAME).read_text()))
+    spec = Component.from_spec(json.loads((src / CONFIG_NAME).read_text()))
     return spec, {f.parent.name: load_file(f) for f in src.glob(f"*/{WEIGHTS_NAME}")}
 
 
