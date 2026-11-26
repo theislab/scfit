@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError, model_validator
 
-from modelbinder.registry import Component, PortabilityError, component, config_of, parse, to_spec
+from modelbinder.registry import Component, PortabilityError, component, config_of
 
 
 @component("test.widget")
@@ -19,7 +19,7 @@ class _Widget(Component):
 def test_round_trips_through_a_json_spec():
     spec = _Widget(width=5).to_spec()
     assert spec == {"type": "test.widget", "width": 5}
-    assert parse(json.loads(json.dumps(spec))) == _Widget(width=5)
+    assert Component.from_spec(json.loads(json.dumps(spec))) == _Widget(width=5)
 
 
 @pytest.mark.parametrize(
@@ -32,7 +32,7 @@ def test_round_trips_through_a_json_spec():
 )
 def test_bad_specs_are_rejected(spec, match):
     with pytest.raises(ValidationError, match=match):
-        parse(spec)
+        Component.from_spec(spec)
 
 
 @component("test.positive")
@@ -88,7 +88,7 @@ def test_a_family_field_keeps_each_members_class_and_fields():
         "type": "test.one_hot",
         "categories": ["x"],
     }  # not cut to the base's fields
-    assert parse(json.loads(json.dumps(spec))) == config
+    assert Component.from_spec(json.loads(json.dumps(spec))) == config
 
 
 def test_a_family_field_needs_a_type():
@@ -108,7 +108,7 @@ class _Node(Component):
 
 def test_a_component_may_name_itself():
     tree = _Node(children=[_Node(), _Node(children=[_Node()])])
-    assert parse(tree.to_spec()) == tree
+    assert Component.from_spec(tree.to_spec()) == tree
 
 
 @component("test.holder")
@@ -123,7 +123,7 @@ class _Holder(Component):
 )
 def test_live_objects_have_no_spec(live):
     with pytest.raises(PortabilityError):
-        to_spec(_Holder(obj=live))
+        _Holder(obj=live).to_spec()
 
 
 def test_an_unregistered_subclass_has_no_spec():

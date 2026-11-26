@@ -13,7 +13,7 @@ from typing import Any, ClassVar, Self
 from pydantic import BaseModel, ConfigDict, ValidationInfo, model_serializer, model_validator
 from pydantic_core import PydanticSerializationError
 
-__all__ = ["Component", "PortabilityError", "component", "config_of", "to_spec", "parse"]
+__all__ = ["Component", "PortabilityError", "component", "config_of"]
 
 _REGISTRY: dict[str, type[Component]] = {}
 _CONFIGS: dict[type, type[Component]] = {}  # implementation -> the config that builds it
@@ -74,7 +74,13 @@ class Component(BaseModel):
 
     def to_spec(self) -> dict[str, Any]:
         """Return the portable JSON spec; raises :class:`PortabilityError` on anything that is not JSON."""
-        return to_spec(self)
+        try:
+            spec = self.model_dump(mode="json")
+        except PydanticSerializationError as e:
+            raise PortabilityError(f"{type(self).__name__} holds something a spec cannot: {e}") from None
+        if type(self).model_validate(spec) != self:  # pydantic coerces e.g. NaN, sets, enums in `Any` fields
+            raise PortabilityError(f"{type(self).__name__} does not read back from its spec; it holds non-JSON values.")
+        return spec
 
     @classmethod
     def from_spec(cls, spec: Mapping[str, object]) -> Self:
@@ -123,19 +129,3 @@ def config_of(implementation: type) -> type[Component]:
         return _CONFIGS[implementation]
     except KeyError:
         raise KeyError(f"no config builds {implementation.__name__}.") from None
-
-
-def to_spec(config: Component) -> dict[str, Any]:
-    """Config -> portable JSON spec. Typed ``Any`` like :func:`json.loads`: a spec is data to write out."""
-    try:
-        spec = config.model_dump(mode="json")
-    except PydanticSerializationError as e:
-        raise PortabilityError(f"{type(config).__name__} holds something a spec cannot: {e}") from None
-    if type(config).model_validate(spec) != config:  # pydantic coerces e.g. NaN, sets, enums in `Any` fields
-        raise PortabilityError(f"{type(config).__name__} does not read back from its spec; it holds non-JSON values.")
-    return spec
-
-
-def parse(spec: Mapping[str, object]) -> Component:
-    """A spec -> the registered :class:`Component` its ``type`` names."""
-    return Component.from_spec(spec)
