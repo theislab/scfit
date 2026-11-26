@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError, model_validator
 
-from modelbinder.registry import Component, PortabilityError, component, config_of
+from modelbinder.registry import Component, PortabilityError, component
 
 
 @component("test.widget")
@@ -149,28 +149,3 @@ def test_type_ids_are_unique():
         @component("test.widget")
         class _Again(Component):
             pass
-
-
-class _Thing:
-    pass
-
-
-@component("test.thing", builds=_Thing)
-class _ThingConfig(Component):
-    size: int = 1
-
-    def build(self) -> _Thing:
-        return _Thing()
-
-
-def test_builds_links_config_and_implementation():
-    assert config_of(_Thing) is _ThingConfig
-
-
-def test_one_config_per_implementation():
-    with pytest.raises(ValueError, match="already built by"):
-
-        @component("test.second", builds=_Thing)
-        class _Second(Component):
-            def build(self) -> _Thing:
-                return _Thing()

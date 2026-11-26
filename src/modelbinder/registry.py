@@ -13,10 +13,9 @@ from typing import Any, ClassVar, Self
 from pydantic import BaseModel, ConfigDict, ValidationInfo, model_serializer, model_validator
 from pydantic_core import PydanticSerializationError
 
-__all__ = ["Component", "PortabilityError", "component", "config_of"]
+__all__ = ["Component", "PortabilityError", "component"]
 
 _REGISTRY: dict[str, type[Component]] = {}
-_CONFIGS: dict[type, type[Component]] = {}  # implementation -> the config that builds it
 
 
 class PortabilityError(Exception):
@@ -90,16 +89,8 @@ class Component(BaseModel):
         return cls.model_validate(spec)
 
 
-def component[C: Component](
-    type_id: str,
-    *,
-    builds: type | None = None,
-) -> Callable[[type[C]], type[C]]:
-    """Register a `Component` subclass under ``type_id``, the stable name its specs carry.
-
-    ``builds`` names the implementation the config's ``build`` returns, so :func:`config_of` finds the
-    config for it. One config per implementation.
-    """
+def component[C: Component](type_id: str) -> Callable[[type[C]], type[C]]:
+    """Register a `Component` subclass under ``type_id``, the stable name its specs carry."""
     if not isinstance(type_id, str) or not type_id:
         raise TypeError("type_id must be a non-empty string.")
 
@@ -111,21 +102,8 @@ def component[C: Component](
         existing = _REGISTRY.get(type_id)
         if existing is not None and existing is not cls:
             raise ValueError(f"type_id {type_id!r} already registered to {existing.__name__}.")
-        linked = _CONFIGS.get(builds) if builds is not None else None
-        if linked is not None and linked is not cls:
-            raise ValueError(f"{builds.__name__} is already built by {linked.__name__}.")  # pyright: ignore[reportOptionalMemberAccess]
         cls.__type_id__ = type_id
         _REGISTRY[type_id] = cls
-        if builds is not None:
-            _CONFIGS[builds] = cls
         return cls
 
     return register
-
-
-def config_of(implementation: type) -> type[Component]:
-    """The config registered as building ``implementation``."""
-    try:
-        return _CONFIGS[implementation]
-    except KeyError:
-        raise KeyError(f"no config builds {implementation.__name__}.") from None
