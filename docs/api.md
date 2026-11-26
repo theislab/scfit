@@ -1,11 +1,9 @@
 # API
 
 ```{eval-rst}
-.. currentmodule:: modelbinder
+.. automodule:: modelbinder.registry
+    :members:
 
-.. autosummary::
-    :toctree: generated
-
-    registry
-    pretrained
+.. automodule:: modelbinder.pretrained
+    :members:
 ```

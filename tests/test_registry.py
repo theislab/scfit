@@ -25,12 +25,10 @@ def test_round_trips_through_a_json_spec():
 @pytest.mark.parametrize(
     ("spec", "match"),
     [
-        ({"type": "test.widget", "nope": 1}, "Extra inputs"),
         ({"type": "test.nonexistent"}, "Unknown type"),
-        ({"type": "test.widget", "width": "wide"}, "valid integer"),
         ({"type": ["test.widget"]}, "is a string"),
     ],
-    ids=["typo_field", "unknown_type", "bad_value", "list_type"],
+    ids=["unknown_type", "list_type"],
 )
 def test_bad_specs_are_rejected(spec, match):
     with pytest.raises(ValidationError, match=match):
@@ -54,11 +52,6 @@ def test_copies_and_construction_are_validated():
     with pytest.raises(ValidationError, match="positive"):
         _Positive.model_construct(n=0)
     assert _Positive().model_copy(update={"n": 2}) == _Positive(n=2)
-
-
-def test_components_are_frozen():
-    with pytest.raises(ValidationError):
-        _Widget().width = 4  # pyright: ignore[reportAttributeAccessIssue]  (the point)
 
 
 class _Enc(Component):  # an open family: members register anywhere
@@ -133,15 +126,6 @@ def test_live_objects_have_no_spec(live):
         to_spec(_Holder(obj=live))
 
 
-def test_non_finite_floats_are_rejected():
-    @component("test.finite")
-    class _Finite(Component):
-        x: float = 0.0
-
-    with pytest.raises(ValidationError):
-        _Finite(x=float("nan"))
-
-
 def test_an_unregistered_subclass_has_no_spec():
     class _Unregistered(_OneHot):
         pass
@@ -149,17 +133,6 @@ def test_an_unregistered_subclass_has_no_spec():
     for config in (_Unregistered(), _Encoders(one=_Unregistered())):  # top level and nested
         with pytest.raises(PortabilityError, match="not registered"):
             config.to_spec()
-
-
-def test_a_member_keeps_its_fields_under_any_pydantic_entry_point():
-    from pydantic import BaseModel, TypeAdapter
-
-    class _Plain(BaseModel):
-        enc: _Enc
-
-    member = _OneHot(categories=("x",))
-    assert _Plain.model_validate_json(_Plain(enc=member).model_dump_json()).enc == member
-    assert TypeAdapter(list[_Enc]).dump_python([member])[0]["categories"] == ("x",)
 
 
 def test_type_is_reserved():

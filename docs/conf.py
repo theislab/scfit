@@ -39,7 +39,7 @@ needs_sphinx = "4.0"
 
 html_context = {
     "display_github": True,  # Integrate GitHub
-    "github_user": "selmanozleyen",
+    "github_user": "theislab",
     "github_repo": project,
     "github_version": "main",
     "conf_py_path": "/docs/",
@@ -101,6 +101,8 @@ intersphinx_mapping = {
     "anndata": ("https://anndata.scverse.org/en/stable/", None),
     "scanpy": ("https://scanpy.scverse.org/en/stable/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
+    "pydantic": ("https://docs.pydantic.dev/latest/", None),
+    "torch": ("https://docs.pytorch.org/docs/stable/", None),
 }
 
 # List of patterns, relative to source directory, that match files and
